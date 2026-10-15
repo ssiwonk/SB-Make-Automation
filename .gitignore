@@ -1,0 +1,46 @@
+# SB-Make-Automation .gitignore
+
+# 1. 작업 산출물 및 임시 캐시 폴더
+project/*
+!project/.gitkeep
+md/*
+!md/.gitkeep
+temp/*
+!temp/.gitkeep
+
+# 2. Python 캐시 및 가상환경
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# 3. OS 관련 파일
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 4. 에디터 및 IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 5. 환경 설정 및 시크릿
+*.log
+*.tmp
+.env
+.env.local
+.env.*.local

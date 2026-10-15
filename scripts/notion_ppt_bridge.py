@@ -1,0 +1,650 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Notion-PPT Automation Bridge
+- Notion DB(PPT-Pipeline, PPT-Scripts, PPT-Guidelines)와 로컬 생성 엔진(ppt-master)을 연동
+- 노션 본문 내 마크다운 추출 및 이미지(S3) 로컬 자동 캐싱
+- 생성된 PPTX 파일 Google Drive 자동 동기화 (로컬 마운트 드라이브 복사)
+- Notion PPT결과 속성 링크 Append 및 진행상태 업데이트
+"""
+
+import os
+import sys
+import json
+import shutil
+import urllib.request
+import urllib.parse
+from pathlib import Path
+from datetime import datetime
+
+# Windows 콘솔 UTF-8 인코딩 보장
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
+# ==========================================
+# 기본 환경 설정 (.env 자동 로드)
+# ==========================================
+def _load_env():
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+        Path(__file__).resolve().parent / ".env"
+    ]
+    for env_file in candidates:
+        if env_file.exists():
+            with open(env_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k.strip() not in os.environ:
+                            os.environ[k.strip()] = v.strip().strip('"').strip("'")
+            break
+
+_load_env()
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
+
+PIPELINE_DB_ID = "3fa624a3-5444-8064-aa7c-ed9c93dd8bdd"
+SCRIPTS_DB_ID = "3fa624a3-5444-803c-93ff-f437c0b9f9d8"
+GUIDELINES_DB_ID = "3fa624a3-5444-80c1-9c4e-c4ea770a8a92"
+
+GDRIVE_LOCAL_PATH = Path(r"G:\내 드라이브\Works_attach\NOTION-PPT")
+GDRIVE_WEB_URL = "https://drive.google.com/open?id=1CH7TFrOZMDKQD3SsvFWQ2Sl1sZcbWMwG&usp=drive_fs"
+
+NOTION_VERSION = "2022-06-28"
+NOTION_API_BASE = "https://api.notion.com/v1"
+
+# ==========================================
+# Notion API Helper
+# ==========================================
+def notion_request(endpoint, method="GET", body=None):
+    url = f"{NOTION_API_BASE}/{endpoint.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION
+    }
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode("utf-8")
+        print(f"[Notion API Error] {e.code}: {err_msg}", file=sys.stderr)
+        raise
+
+def query_database(database_id, filter_dict=None):
+    body = {"page_size": 100}
+    if filter_dict:
+        body["filter"] = filter_dict
+    return notion_request(f"databases/{database_id}/query", method="POST", body=body)
+
+def get_page(page_id):
+    return notion_request(f"pages/{page_id}", method="GET")
+
+def update_page_properties(page_id, properties):
+    body = {"properties": properties}
+    return notion_request(f"pages/{page_id}", method="PATCH", body=body)
+
+def get_block_children(block_id):
+    results = []
+    start_cursor = None
+    while True:
+        endpoint = f"blocks/{block_id}/children?page_size=100"
+        if start_cursor:
+            endpoint += f"&start_cursor={start_cursor}"
+        res = notion_request(endpoint, method="GET")
+        results.extend(res.get("results", []))
+        if not res.get("has_more"):
+            break
+        start_cursor = res.get("next_cursor")
+    return results
+
+# ==========================================
+# Rich Text & Block to Markdown Converter
+# ==========================================
+def rich_text_to_markdown(rich_text_list):
+    if not rich_text_list:
+        return ""
+    md_parts = []
+    for item in rich_text_list:
+        text = item.get("plain_text", "")
+        annotations = item.get("annotations", {})
+        if annotations.get("code"):
+            text = f"`{text}`"
+        if annotations.get("bold"):
+            text = f"**{text}**"
+        if annotations.get("italic"):
+            text = f"*{text}*"
+        if annotations.get("strikethrough"):
+            text = f"~~{text}~~"
+        
+        href = item.get("href")
+        if href:
+            text = f"[{text}]({href})"
+        md_parts.append(text)
+    return "".join(md_parts)
+
+def blocks_to_markdown(blocks, indent=0):
+    lines = []
+    prefix = "  " * indent
+    for block in blocks:
+        b_type = block.get("type")
+        b_data = block.get(b_type, {})
+        
+        if b_type == "paragraph":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"{prefix}{text}\n")
+        elif b_type == "heading_1":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"\n{prefix}# {text}\n")
+        elif b_type == "heading_2":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"\n{prefix}## {text}\n")
+        elif b_type == "heading_3":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"\n{prefix}### {text}\n")
+        elif b_type == "bulleted_list_item":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"{prefix}* {text}")
+        elif b_type == "numbered_list_item":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"{prefix}1. {text}")
+        elif b_type == "to_do":
+            checked = b_data.get("checked", False)
+            mark = "x" if checked else " "
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"{prefix}- [{mark}] {text}")
+        elif b_type == "quote":
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"{prefix}> {text}")
+        elif b_type == "callout":
+            icon = b_data.get("icon", {}).get("emoji", "💡")
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"\n{prefix}> {icon} {text}\n")
+        elif b_type == "code":
+            lang = b_data.get("language", "")
+            text = rich_text_to_markdown(b_data.get("rich_text", []))
+            lines.append(f"```{lang}\n{text}\n```")
+        elif b_type == "divider":
+            lines.append("\n---\n")
+        elif b_type == "image":
+            img_type = b_data.get("type")
+            url = b_data.get(img_type, {}).get("url", "")
+            caption = rich_text_to_markdown(b_data.get("caption", []))
+            lines.append(f"![{caption}]({url})")
+        
+        # 하위 블록 순회
+        if block.get("has_children"):
+            children = get_block_children(block["id"])
+            child_md = blocks_to_markdown(children, indent=indent + 1)
+            lines.append(child_md)
+
+    return "\n".join(lines)
+
+# ==========================================
+# Image Downloader & Link Replacer
+# ==========================================
+def download_image(url, save_path):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req) as response, open(save_path, 'wb') as out_file:
+        shutil.copyfileobj(response, out_file)
+
+def cache_images_and_fix_links(md_content, project_name, md_dir):
+    """
+    마크다운 본문 내 이미지 URL(특히 Notion S3 링크)을 탐지하여
+    로컬 md/<project_name>/ 폴더로 다운로드 후 상대 경로로 치환
+    """
+    import re
+    img_dir = md_dir / project_name
+    img_dir.mkdir(parents=True, exist_ok=True)
+    
+    # ![caption](url) 패턴 검색
+    pattern = r'!\[(.*?)\]\((https?://[^\)]+)\)'
+    matches = list(re.finditer(pattern, md_content))
+    
+    if not matches:
+        return md_content, 0
+    
+    replacements = []
+    img_count = 0
+    for idx, match in enumerate(matches, 1):
+        caption = match.group(1)
+        url = match.group(2)
+        
+        # 파일 확장자 추론
+        clean_url = url.split("?")[0]
+        ext = os.path.splitext(clean_url)[1].lower()
+        if not ext or ext not in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]:
+            ext = ".png"
+            
+        filename = f"img_{idx:02d}{ext}"
+        target_path = img_dir / filename
+        
+        print(f"  [Image Download] #{idx}: {filename} <- {clean_url[:60]}...")
+        try:
+            download_image(url, target_path)
+            # 상대 경로로 치환: md/<project_name>/img_01.png
+            rel_path = f"{project_name}/{filename}"
+            replacements.append((match.group(0), f"![{caption}]({rel_path})"))
+            img_count += 1
+        except Exception as e:
+            print(f"  [Warning] Failed to download image #{idx}: {e}", file=sys.stderr)
+            
+    fixed_md = md_content
+    for old_tag, new_tag in replacements:
+        fixed_md = fixed_md.replace(old_tag, new_tag)
+        
+    return fixed_md, img_count
+
+# ==========================================
+# 주요 비즈니스 파이프라인 함수
+# ==========================================
+def list_pipeline_projects():
+    """PPT-Pipeline DB의 프로젝트 목록 및 상태 조회"""
+    data = query_database(PIPELINE_DB_ID)
+    projects = []
+    print("\n" + "=" * 70)
+    print(" [PPT-Dev-Pipeline] 프로젝트 목록")
+    print("=" * 70)
+    
+    for page in data.get("results", []):
+        p_id = page["id"]
+        props = page["properties"]
+        
+        title_objs = props.get("프로젝트", {}).get("title", [])
+        title = title_objs[0]["plain_text"] if title_objs else "(제목 없음)"
+        
+        status_obj = props.get("진행상태", {}).get("select")
+        status = status_obj["name"] if status_obj else "미지정"
+        
+        ratio_obj = props.get("개발비율", {}).get("select") or props.get("비율", {}).get("select")
+        ratio = ratio_obj["name"] if ratio_obj else "4:3 (기본)"
+        
+        scripts = props.get("원고", {}).get("relation", [])
+        guidelines = props.get("PPT개발지침", {}).get("relation", []) or props.get("개발지침", {}).get("relation", [])
+        
+        results_objs = props.get("PPT결과", {}).get("rich_text", [])
+        results_preview = results_objs[0]["plain_text"][:30] + "..." if results_objs else "없음"
+        
+        projects.append({
+            "id": p_id,
+            "title": title,
+            "status": status,
+            "ratio": ratio,
+            "has_script": len(scripts) > 0,
+            "has_guidelines": len(guidelines) > 0,
+            "results": results_preview
+        })
+        
+        print(f"* 프로젝트: {title} (ID: {p_id})")
+        print(f"  - 상태: [{status}] | 비율: [{ratio}]")
+        print(f"  - 원고 연결: {'O (' + str(len(scripts)) + '개)' if scripts else 'X'} | 지침 연결: {'O (' + str(len(guidelines)) + '개)' if guidelines else 'X'}")
+        print(f"  - 결과물: {results_preview}")
+        print("-" * 70)
+        
+    return projects
+
+def fetch_project_data(project_identifier):
+    """
+    프로젝트명 또는 Page ID로 원고와 지침을 수집하여 로컬 md 파일로 빌드
+    """
+    # 1. 대상 프로젝트 페이지 찾기
+    all_data = query_database(PIPELINE_DB_ID)
+    target_page = None
+    
+    for page in all_data.get("results", []):
+        p_id = page["id"]
+        title_objs = page["properties"].get("프로젝트", {}).get("title", [])
+        title = title_objs[0]["plain_text"] if title_objs else ""
+        if project_identifier in [p_id, title]:
+            target_page = page
+            break
+            
+    if not target_page:
+        raise ValueError(f"프로젝트 '{project_identifier}'를 PPT-Pipeline에서 찾을 수 없습니다.")
+        
+    props = target_page["properties"]
+    title_objs = props.get("프로젝트", {}).get("title", [])
+    proj_name = title_objs[0]["plain_text"] if title_objs else "untitled"
+    # 안전한 파일명으로 정규화
+    safe_name = "".join([c for c in proj_name if c.isalnum() or c in (" ", "-", "_")]).strip()
+    
+    ratio_obj = props.get("개발비율", {}).get("select") or props.get("비율", {}).get("select")
+    ratio = ratio_obj["name"] if ratio_obj else "4:3"
+    
+    script_relations = props.get("원고", {}).get("relation", [])
+    guideline_relations = props.get("PPT개발지침", {}).get("relation", []) or props.get("개발지침", {}).get("relation", [])
+    
+    print(f"\n[Fetch] 프로젝트 '{proj_name}' 데이터 수집 시작...")
+    
+    # 2. 원고 마크다운 추출
+    script_md_parts = []
+    if not script_relations:
+        print("  [Warning] 연결된 원고(PPT-Scripts)가 없습니다. 프로젝트 본문을 검사합니다.")
+        proj_blocks = get_block_children(target_page["id"])
+        script_md_parts.append(blocks_to_markdown(proj_blocks))
+    else:
+        for s_ref in script_relations:
+            s_page = get_page(s_ref["id"])
+            s_title = s_page["properties"].get("원고", {}).get("title", [])
+            s_title_str = s_title[0]["plain_text"] if s_title else "원고"
+            print(f"  - 원고 로드: '{s_title_str}' ({s_ref['id']})")
+            
+            blocks = get_block_children(s_ref["id"])
+            md = blocks_to_markdown(blocks)
+            script_md_parts.append(md)
+            
+    full_script_md = "\n\n".join(script_md_parts)
+    
+    # 3. 개발지침 추출
+    guideline_parts = []
+    for g_ref in guideline_relations:
+        g_page = get_page(g_ref["id"])
+        g_title = g_page["properties"].get("개발지침", {}).get("title", [])
+        g_title_str = g_title[0]["plain_text"] if g_title else "지침"
+        print(f"  - 개발지침 로드: '{g_title_str}' ({g_ref['id']})")
+        
+        g_blocks = get_block_children(g_ref["id"])
+        g_md = blocks_to_markdown(g_blocks)
+        guideline_parts.append(f"### [지침: {g_title_str}]\n{g_md}")
+        
+    full_guideline_md = "\n\n".join(guideline_parts)
+    
+    # 4. 이미지 다운로드 및 로컬 캐싱
+    md_root = Path("md")
+    md_root.mkdir(parents=True, exist_ok=True)
+    
+    print("  [Image Caching] 본문 내 이미지 다운로드 및 상대 경로 치환 중...")
+    clean_md, downloaded_count = cache_images_and_fix_links(full_script_md, safe_name, md_root)
+    print(f"  [Image Caching] 총 {downloaded_count}개 이미지 로컬 저장 완료.")
+    
+    # 5. 로컬 파일 저장
+    v1_file = md_root / f"{safe_name}_v1.md"
+    with open(v1_file, "w", encoding="utf-8") as f:
+        f.write(clean_md)
+    print(f"  -> 원고 마크다운 저장: {v1_file}")
+    
+    guideline_file = md_root / f"{safe_name}_guidelines.md"
+    if full_guideline_md:
+        with open(guideline_file, "w", encoding="utf-8") as f:
+            f.write(full_guideline_md)
+        print(f"  -> 지침 마크다운 저장: {guideline_file}")
+        
+    return {
+        "project_id": target_page["id"],
+        "project_name": proj_name,
+        "safe_name": safe_name,
+        "ratio": ratio,
+        "v1_file": str(v1_file),
+        "guideline_file": str(guideline_file) if full_guideline_md else None,
+        "image_count": downloaded_count
+    }
+
+def convert_script_from_file(script_identifier):
+    """
+    PPT-Scripts에 등록된 '원본파일'(HWP, HWPX, DOCX, PPTX, PDF)을 다운로드하고
+    연결된 '원고변환지침'에 맞춰 마크다운으로 변환한 뒤,
+    기존 내용을 지우지 않고 본문 아래에 새 버전으로 Append 및 버전 속성 증가
+    """
+    sys.path.append(str(Path(__file__).resolve().parent))
+    try:
+        from doc_parser import extract_manuscript_text
+    except ImportError as e:
+        print(f"[Error] doc_parser를 불러올 수 없습니다: {e}", file=sys.stderr)
+        return
+
+    # 1. 대상 원고 페이지 검색
+    all_scripts = query_database(SCRIPTS_DB_ID)
+    target_page = None
+    for page in all_scripts.get("results", []):
+        p_id = page["id"]
+        title_objs = page["properties"].get("원고", {}).get("title", [])
+        title = title_objs[0]["plain_text"] if title_objs else ""
+        if script_identifier in [p_id, title]:
+            target_page = page
+            break
+
+    if not target_page:
+        print(f"[Error] 원고 '{script_identifier}'를 PPT-Scripts에서 찾을 수 없습니다.", file=sys.stderr)
+        return
+
+    page_id = target_page["id"]
+    props = target_page["properties"]
+    title_objs = props.get("원고", {}).get("title", [])
+    script_title = title_objs[0]["plain_text"] if title_objs else "untitled"
+
+    # 원본 파일 확인
+    files_list = props.get("원본파일", {}).get("files", [])
+    if not files_list:
+        print(f"[Error] '{script_title}'에 등록된 '원본파일'이 없습니다.", file=sys.stderr)
+        return
+
+    first_file = files_list[0]
+    file_name = first_file.get("name", "source_file")
+    file_url = first_file.get("file", {}).get("url") or first_file.get("external", {}).get("url")
+    if not file_url:
+        print(f"[Error] 파일 다운로드 URL을 가져올 수 없습니다.", file=sys.stderr)
+        return
+
+    # 연결된 원고변환지침 확인
+    guideline_relations = props.get("원고변환지침", {}).get("relation", [])
+    guideline_names = []
+    guideline_texts = []
+    for g_ref in guideline_relations:
+        g_page = get_page(g_ref["id"])
+        g_title = g_page["properties"].get("개발지침", {}).get("title", [])
+        g_name = g_title[0]["plain_text"] if g_title else "지침"
+        guideline_names.append(g_name)
+        g_blocks = get_block_children(g_ref["id"])
+        guideline_texts.append(f"### [지침: {g_name}]\n" + blocks_to_markdown(g_blocks))
+
+    guideline_summary = ", ".join(guideline_names) if guideline_names else "기본 변환 규칙"
+
+    print(f"\n[Convert Script] 원고: '{script_title}' (파일: {file_name})")
+    print(f"  - 적용 지침: {guideline_summary}")
+
+    # 파일 다운로드 (temp/)
+    temp_dir = Path("temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file_name).suffix
+    local_file_path = temp_dir / f"download_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
+
+    print(f"  - 원본 파일 다운로드 중: {file_name}...")
+    download_image(file_url, local_file_path)
+
+    # doc_parser로 텍스트 추출
+    print(f"  - 범용 파서(doc_parser)로 텍스트 추출 중...")
+    parse_res = extract_manuscript_text(str(local_file_path))
+    if parse_res["status"] != "success":
+        print(f"[Error] 파일 파싱 실패: {parse_res['error_msg']}", file=sys.stderr)
+        return
+
+    raw_text = parse_res["text"]
+    char_len = parse_res["char_count"]
+    print(f"  - 텍스트 추출 완료: 총 {char_len:,}자")
+
+    # 버전 계산
+    curr_version_obj = props.get("버전", {}).get("select")
+    curr_v = curr_version_obj["name"] if curr_version_obj else "v00"
+    v_num = int(curr_v.replace("v", "")) if curr_v.startswith("v") and curr_v.replace("v", "").isdigit() else 0
+    next_v = f"v{v_num + 1:02d}"
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 마크다운 블록 조립 (비파괴적 Append)
+    new_blocks = [
+        {"object": "block", "type": "divider", "divider": {}},
+        {
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [{"type": "text", "text": {"content": f"📌 [{next_v}] {now_str} (원본 자동 변환 마크다운)"}}]
+            }
+        },
+        {
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "icon": {"type": "emoji", "emoji": "📎"},
+                "rich_text": [{"type": "text", "text": {"content": f"원본 파일: {file_name} | 적용 지침: {guideline_summary}"}}]
+            }
+        }
+    ]
+
+    # 원문 텍스트를 문단 단위 블록으로 변환하여 추가 (1000자 단위 안전 분할)
+    paragraphs = raw_text.split("\n\n")
+    for para in paragraphs[:50]:  # 노션 API 단일 요청 블록 한도 안전 처리
+        para_clean = para.strip()
+        if not para_clean:
+            continue
+        # 헤더 자동 추론 (슬라이드 N 또는 특수문자 시작 시 h3)
+        if para_clean.startswith(("#", "▶", "슬라이드", "Unit", "유닛")):
+            new_blocks.append({
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": [{"type": "text", "text": {"content": para_clean[:2000]}}]}
+            })
+        elif para_clean.startswith(("-", "*", "•")):
+            new_blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": para_clean.lstrip("-*• ")[:2000]}}]}
+            })
+        else:
+            new_blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": para_clean[:2000]}}]}
+            })
+
+    # 노션 페이지 본문 아래에 Append
+    print(f"  - 노션 본문 아래에 [{next_v}] 마크다운 블록 누적(Append) 중...")
+    notion_request(f"blocks/{page_id}/children", method="PATCH", body={"children": new_blocks})
+
+    # 버전 속성 업데이트
+    update_page_properties(page_id, {"버전": {"select": {"name": next_v}}})
+    print(f"\n[Success] '{script_title}' 변환 완료!")
+    print(f"  - 버전 갱신: {curr_v} ➔ [{next_v}]")
+    print(f"  - 노션 본문 하단에 [{next_v}] 마크다운이 성공적으로 누적되었습니다.")
+
+def deploy_and_update_pipeline(project_id, pptx_files, new_status="PPT 생성완료"):
+    """
+    생성된 PPTX 파일들을 구글 드라이브(로컬 마운트)의 <프로젝트명>/ 하위 폴더로 복사하고,
+    Notion PPT-Pipeline의 PPT결과 속성에 파일명과 일시를 누적(Append)하여 업데이트
+    """
+    import re
+    target_page = get_page(project_id)
+    props = target_page["properties"]
+    
+    # 프로젝트명 추출
+    title_objs = props.get("프로젝트", {}).get("title", [])
+    proj_name = title_objs[0]["plain_text"] if title_objs else "Untitled"
+    safe_proj_name = re.sub(r'[\\/*?:"<>|]', "_", proj_name).strip()
+    
+    # 기존 PPT결과 텍스트 가져오기
+    existing_rich_text = props.get("PPT결과", {}).get("rich_text", [])
+    existing_text = "".join([t.get("plain_text", "") for t in existing_rich_text])
+    
+    copied_files_info = []
+    
+    # 구글 드라이브 마운트 확인 및 프로젝트 하위 폴더 생성
+    gdrive_active = GDRIVE_LOCAL_PATH.exists()
+    if gdrive_active:
+        proj_gdrive_dir = GDRIVE_LOCAL_PATH / safe_proj_name
+        proj_gdrive_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        print(f"[Warning] 구글 드라이브 로컬 경로({GDRIVE_LOCAL_PATH})에 접근할 수 없습니다.", file=sys.stderr)
+        
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    for file_str in pptx_files:
+        src_path = Path(file_str).resolve()
+        if not src_path.exists():
+            print(f"  [Warning] 파일을 찾을 수 없어 건너뜁니다: {src_path}", file=sys.stderr)
+            continue
+            
+        file_name = src_path.name
+        if gdrive_active:
+            dest_path = proj_gdrive_dir / file_name
+            shutil.copy2(src_path, dest_path)
+            print(f"  [Google Drive Sync] 동기화 완료: {dest_path}")
+            info_line = f"[{now_str}] {file_name}"
+        else:
+            info_line = f"[{now_str}] {file_name}"
+            
+        copied_files_info.append(info_line)
+        
+    if not copied_files_info:
+        print("동기화할 유효한 PPTX 파일이 없습니다.")
+        return
+        
+    # 노션 PPT결과 Append 구성
+    new_append_block = "\n".join(copied_files_info)
+    updated_text = f"{existing_text}\n{new_append_block}".strip() if existing_text else new_append_block
+    
+    # 노션 업데이트 요청
+    update_props = {
+        "PPT결과": {
+            "rich_text": [
+                {
+                    "type": "text",
+                    "text": {"content": updated_text}
+                }
+            ]
+        },
+        "진행상태": {
+            "select": {"name": new_status}
+        }
+    }
+    
+    update_page_properties(project_id, update_props)
+    print(f"\n[Notion Update] 프로젝트 ID({project_id})의 'PPT결과' 및 진행상태([{new_status}]) 업데이트 완료!")
+    print(f"  추가된 내용:\n{new_append_block}")
+
+# ==========================================
+# CLI Entrypoint
+# ==========================================
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Notion-PPT Bridge Pipeline Controller")
+    subparsers = parser.add_subparsers(dest="command", help="실행할 명령어")
+    
+    # 1. list
+    subparsers.add_parser("list", help="PPT-Pipeline 프로젝트 목록 및 상태 조회")
+    
+    # 2. fetch
+    fetch_parser = subparsers.add_parser("fetch", help="노션에서 원고/지침 수집 및 이미지 로컬 캐싱")
+    fetch_parser.add_argument("project", help="프로젝트명 또는 Notion Page ID")
+    
+    # 3. deploy
+    deploy_parser = subparsers.add_parser("deploy", help="생성된 PPTX 파일을 구글 드라이브로 배포하고 노션 업데이트")
+    deploy_parser.add_argument("project_id", help="Notion PPT-Pipeline Page ID")
+    deploy_parser.add_argument("files", nargs="+", help="배포할 .pptx 파일 경로 목록")
+    deploy_parser.add_argument("--status", default="PPT 생성완료", help="변경할 진행상태 (기본: 'PPT 생성완료')")
+
+    # 4. convert-script
+    conv_parser = subparsers.add_parser("convert-script", help="PPT-Scripts에 첨부된 원본파일을 마크다운으로 변환하여 본문 누적 및 버전 증가")
+    conv_parser.add_argument("script", help="원고명 또는 PPT-Scripts Page ID")
+    
+    args = parser.parse_args()
+    
+    if args.command == "list":
+        list_pipeline_projects()
+    elif args.command == "fetch":
+        fetch_project_data(args.project)
+    elif args.command == "deploy":
+        deploy_and_update_pipeline(args.project_id, args.files, args.status)
+    elif args.command == "convert-script":
+        convert_script_from_file(args.script)
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()
+
