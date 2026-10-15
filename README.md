@@ -40,8 +40,8 @@ flowchart TD
 
     subgraph Bridge ["2. Bridge Controller (scripts/)"]
         CS["convert-script<br/>(HWP/DOCX/PDF ➔ MD 누적)"]
-        FC["fetch<br/>(원고/지침 수집 & 이미지 캐싱)"]
-        DP["deploy<br/>(클라우드 배포 & 상태 갱신)"]
+        FC["fetch<br/>(원고/지침 수집 및 이미지 캐싱)"]
+        DP["deploy<br/>(클라우드 배포 및 상태 갱신)"]
     end
 
     subgraph Engine ["3. Generation Engine (ppt-master)"]
@@ -53,24 +53,24 @@ flowchart TD
     end
 
     subgraph Storage ["4. Cloud & Local Storage"]
-        GD["Google Drive 마운트<br/>(G:\내 드라이브\...\<프로젝트명>/)"]
-        ARCH["로컬 아카이브<br/>(project/YYMMDDHHMM_<이름>/)"]
+        GD["Google Drive 마운트<br/>(G: 드라이브 프로젝트 폴더)"]
+        ARCH["로컬 아카이브<br/>(project/타임스탬프 폴더)"]
     end
 
-    DB1 -->|원본 첨부| CS
-    CS -->|마크다운 Append| DB1
-    DB1 -.->|원고 연결| DB3
-    DB2 -.->|지침 연결| DB3
-    DB3 -->|준비 완료| FC
-    FC -->|md/ 저장| MD2
+    DB1 -->|"원본 첨부"| CS
+    CS -->|"마크다운 Append"| DB1
+    DB1 -.->|"원고 연결"| DB3
+    DB2 -.->|"지침 연결"| DB3
+    DB3 -->|"준비 완료"| FC
+    FC -->|"md 수집"| MD2
     MD2 --> SVG
     SVG --> QG
-    QG -->|통과 (0 Errors)| P43
+    QG -->|"검증 통과 (0 Errors)"| P43
     P43 --> P169
     P43 & P169 --> DP
-    DP -->|복사 & 동기화| GD
-    DP -->|최종 보관| ARCH
-    DP -->|상태: PPT 생성완료| DB3
+    DP -->|"동기화 복사"| GD
+    DP -->|"최종 저장"| ARCH
+    DP -->|"상태: PPT 생성완료"| DB3
 ```
 
 ---

@@ -101,8 +101,8 @@ sequenceDiagram
     User->>AI: "PPT 개발해줘" 요청 (또는 배치 트리거)
     AI->>Bridge: fetch 실행
     Bridge->>Notion: 원고 본문 & 연결된 지침 마크다운 조회
-    Bridge->>Bridge: S3 이미지를 로컬 md/<프로젝트명>/에 다운로드 후 상대경로 치환
-    Bridge-->>AI: md/<프로젝트명>_v1.md & _guidelines.md 전달
+    Bridge->>Bridge: S3 이미지를 로컬 md 폴더로 다운로드 후 상대경로 치환
+    Bridge-->>AI: md 프로젝트_v1.md & guidelines.md 전달
 
     Note over AI, Checker: [Step 5] 저작 및 품질 검증
     AI->>AI: spec/md-definition.md 기반 v2 정제 & spec/pptx-definition.md 기반 SVG 직접 저작
@@ -112,7 +112,7 @@ sequenceDiagram
     Note over AI, GDrive: [Step 6 & 7] 빌드, 변환 및 배포
     AI->>AI: 4:3 PPTX 빌드 & convert-ratio.py로 16:9 변환본 자동 생성
     AI->>Bridge: deploy 실행
-    Bridge->>GDrive: G:\내 드라이브\...\<프로젝트명>/ 폴더에 파일 2종 복사
+    Bridge->>GDrive: Google Drive 프로젝트 폴더에 파일 2종 복사
     Bridge->>Notion: 진행상태='PPT 생성완료' 갱신 & PPT결과에 일시/파일명 누적
     AI-->>User: 완료 보고 (로컬 파일 및 드라이브 링크 안내)
 ```
