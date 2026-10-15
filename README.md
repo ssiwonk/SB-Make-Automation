@@ -3,6 +3,7 @@
 > **노션(Notion)에 등록된 다양한 원고와 재활용 가능한 디자인 지침을 결합하여 고품질 PPTX를 자동 생성하고, 구글 드라이브 동기화 및 노션 결과를 실시간 업데이트하는 단일 표준 자동화 파이프라인**
 
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#)
 [![Notion API](https://img.shields.io/badge/Notion%20API-v2022--06--28-black)](https://developers.notion.com/)
 [![Google Drive](https://img.shields.io/badge/Sync-Google%20Drive-brightgreen)](#)
@@ -235,5 +236,12 @@ SB-Make-Automation/
 
 ## 📄 라이선스 (License)
 
-본 프로젝트는 사내 교육 및 강의 콘텐츠 제작 자동화를 위해 구축된 독점적 파이프라인 솔루션입니다.
-Copyright (c) 2026 Simon K. All rights reserved.
+본 프로젝트는 오픈소스 [MIT License](LICENSE)에 따라 자유롭게 사용 및 수정, 배포할 수 있습니다.  
+본 솔루션은 오픈소스 슬라이드 저작 엔진인 [ppt-master](https://github.com/he-hugo/ppt-master)를 기반으로 확장·개발되었으며, 원작자(Hugo He)의 MIT 라이선스 규정을 준수합니다.
+
+```text
+MIT License
+
+Copyright (c) 2026 Simon K.
+Copyright (c) 2025-2026 Hugo He (ppt-master)
+```
