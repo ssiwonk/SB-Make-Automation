@@ -4,14 +4,18 @@
 
 ---
 
-## 1. 기본 규격 및 캔버스 설정
+## 1. 기본 규격 및 캔버스 설정 (동적 비율 분기)
 
-- **기본 비율**: **4:3 표준 비율 (`1024×768 px`, 10×7.5 inch)**
+- **16:9 와이드 규격 (`1280×720 px`, 13.333×7.5 inch) [노션 개발비율 '16:9' 시 기본]**:
+  - root SVG: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" font-family="Malgun Gothic" lang="ko-KR">`
+  - ppt-master 초기화: `--format ppt169`
+  - 가용 너비: `1160px` (`x=60` ~ `x=1220`, 좌우 60px 안전 마진), 가용 높이: `y=160` ~ `y=680`
+  - 사후 `convert-ratio.py` 실행 불필요 (네이티브 16:9 직접 완성)
+- **4:3 표준 규격 (`1024×768 px`, 10×7.5 inch) [노션 개발비율 '4:3' 시 기본]**:
   - root SVG: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 768" font-family="Malgun Gothic" lang="ko-KR">`
   - ppt-master 초기화: `--format ppt43`
-- **16:9 자동 확장 변환 (`scripts/convert-ratio.py`)**:
-  - 4:3 PPTX 생성이 완료되면, 즉시 `scripts/convert-ratio.py`를 실행하여 동일한 `exports/` 폴더에 16:9 와이드 규격(`13.333×7.5 inch`)의 PPTX(`<파일명>-169.pptx`)를 자동 생성하여 함께 보관한다.
-  - 실행 명령: `python scripts/convert-ratio.py "<exports_경로>/<파일명>.pptx"`
+  - 가용 너비: `904px` (`x=60` ~ `x=964`, 좌우 60px 안전 마진)
+  - 4:3 빌드 완료 후 `scripts/convert-ratio.py`를 실행하여 와이드 변환본(`<파일명>-169.pptx`) 동시 생성 보관
 - **슬라이드 역할 태그**:
   - 표지 슬라이드: `data-pptx-page-role="cover"`
   - 간지/섹션 슬라이드: `data-pptx-page-role="section"`

@@ -178,6 +178,19 @@ def blocks_to_markdown(blocks, indent=0):
             caption = rich_text_to_markdown(b_data.get("caption", []))
             lines.append(f"![{caption}]({url})")
         
+        elif b_type == "table":
+            table_rows = get_block_children(block["id"])
+            table_md_lines = []
+            for r_idx, row_block in enumerate(table_rows):
+                if row_block.get("type") == "table_row":
+                    cells = row_block.get("table_row", {}).get("cells", [])
+                    cell_texts = [rich_text_to_markdown(c).replace("\n", "<br>").strip() for c in cells]
+                    table_md_lines.append("| " + " | ".join(cell_texts) + " |")
+                    if r_idx == 0:
+                        table_md_lines.append("| " + " | ".join(["---"] * len(cell_texts)) + " |")
+            lines.append("\n" + "\n".join(table_md_lines) + "\n")
+            continue  # 자식 처리를 table_row로 직접 완료했으므로 하위 블록 순회 스킵
+
         # 하위 블록 순회
         if block.get("has_children"):
             children = get_block_children(block["id"])
@@ -185,6 +198,176 @@ def blocks_to_markdown(blocks, indent=0):
             lines.append(child_md)
 
     return "\n".join(lines)
+
+def markdown_to_blocks(md_content: str):
+    """
+    마크다운 텍스트를 Notion API가 수용하는 블록 규격 리스트로 파싱합니다.
+    - 헤딩 (# h1, ## h2, ### h3, #### h3)
+    - 구분선 (---)
+    - 불릿 (- , * , • )
+    - 번호 목록 (1. , 2. )
+    - 인용문 (> )
+    - 표 (| col | col |) -> Notion 네이티브 table + table_row 블록
+    - 일반 문단 (paragraph, 2,000자 초과 시 1,900자 단위 분할)
+    """
+    import re
+    lines = md_content.splitlines()
+    blocks = []
+    
+    i = 0
+    n = len(lines)
+    
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        
+        if not stripped:
+            i += 1
+            continue
+            
+        # 1. Divider
+        if stripped in ("---", "***", "___"):
+            blocks.append({
+                "object": "block",
+                "type": "divider",
+                "divider": {}
+            })
+            i += 1
+            continue
+            
+        # 2. Headings
+        if stripped.startswith("### "):
+            text = stripped[4:].strip()
+            blocks.append({
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+            })
+            i += 1
+            continue
+        elif stripped.startswith("## "):
+            text = stripped[3:].strip()
+            blocks.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+            })
+            i += 1
+            continue
+        elif stripped.startswith("# "):
+            text = stripped[2:].strip()
+            blocks.append({
+                "object": "block",
+                "type": "heading_1",
+                "heading_1": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+            })
+            i += 1
+            continue
+        elif stripped.startswith("#### "):
+            text = stripped[5:].strip()
+            blocks.append({
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {"rich_text": [{"type": "text", "text": {"content": f"🎯 {text}"[:2000]}}]}
+            })
+            i += 1
+            continue
+
+        # 3. Table detection: lines starting and ending with '|'
+        if stripped.startswith("|") and stripped.endswith("|"):
+            table_lines = []
+            while i < n and lines[i].strip().startswith("|") and lines[i].strip().endswith("|"):
+                t_line = lines[i].strip()
+                is_sep = all(c in "-|: \t" for c in t_line) and "-" in t_line
+                if not is_sep:
+                    raw_cells = t_line[1:-1].split("|")
+                    cells = [c.strip().replace("<br>", "\n") for c in raw_cells]
+                    table_lines.append(cells)
+                i += 1
+                
+            if table_lines:
+                max_cols = max(len(row) for row in table_lines)
+                if max_cols > 0:
+                    table_rows = []
+                    for row in table_lines:
+                        padded = row + [""] * (max_cols - len(row))
+                        cells_json = [
+                            [{"type": "text", "text": {"content": cell[:2000]}}]
+                            for cell in padded
+                        ]
+                        table_rows.append({
+                            "type": "table_row",
+                            "table_row": {"cells": cells_json}
+                        })
+                    
+                    blocks.append({
+                        "object": "block",
+                        "type": "table",
+                        "table": {
+                            "table_width": max_cols,
+                            "has_column_header": True,
+                            "has_row_header": False,
+                            "children": table_rows
+                        }
+                    })
+            continue
+
+        # 4. Bullet list
+        if stripped.startswith(("- ", "* ", "• ")):
+            text = stripped[2:].strip()
+            blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+            })
+            i += 1
+            continue
+
+        # 5. Numbered list
+        m_num = re.match(r"^(\d+)\.\s+(.*)$", stripped)
+        if m_num:
+            text = m_num.group(2).strip()
+            blocks.append({
+                "object": "block",
+                "type": "numbered_list_item",
+                "numbered_list_item": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+            })
+            i += 1
+            continue
+
+        # 6. Quote
+        if stripped.startswith("> "):
+            text = stripped[2:].strip()
+            blocks.append({
+                "object": "block",
+                "type": "quote",
+                "quote": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}
+            })
+            i += 1
+            continue
+
+        # 7. Fallback Paragraph (chunked if > 2000 chars)
+        chunk_len = 1900
+        for c_idx in range(0, len(stripped), chunk_len):
+            chunk = stripped[c_idx:c_idx + chunk_len]
+            blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]}
+            })
+        i += 1
+
+    return blocks
+
+def append_blocks_in_chunks(parent_id: str, blocks: list, chunk_size: int = 80):
+    """
+    Notion API의 1회 요청당 최대 100개 블록 한도를 준수하여 안전하게 배치 분할 업로드
+    """
+    total = len(blocks)
+    for i in range(0, total, chunk_size):
+        chunk = blocks[i:i + chunk_size]
+        print(f"  - 노션 블록 업로드 중: {i + 1}~{min(i + len(chunk), total)} / {total}개 블록...")
+        notion_request(f"blocks/{parent_id}/children", method="PATCH", body={"children": chunk})
 
 # ==========================================
 # Image Downloader & Link Replacer
@@ -608,35 +791,13 @@ def convert_script_from_file(script_identifier):
         }
     ]
 
-    # 원문 텍스트를 문단 단위 블록으로 변환하여 추가 (1000자 단위 안전 분할)
-    paragraphs = raw_text.split("\n\n")
-    for para in paragraphs[:50]:  # 노션 API 단일 요청 블록 한도 안전 처리
-        para_clean = para.strip()
-        if not para_clean:
-            continue
-        # 헤더 자동 추론 (슬라이드 N 또는 특수문자 시작 시 h3)
-        if para_clean.startswith(("#", "▶", "슬라이드", "Unit", "유닛")):
-            new_blocks.append({
-                "object": "block",
-                "type": "heading_3",
-                "heading_3": {"rich_text": [{"type": "text", "text": {"content": para_clean[:2000]}}]}
-            })
-        elif para_clean.startswith(("-", "*", "•")):
-            new_blocks.append({
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": para_clean.lstrip("-*• ")[:2000]}}]}
-            })
-        else:
-            new_blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": [{"type": "text", "text": {"content": para_clean[:2000]}}]}
-            })
+    # raw_text를 구조화된 노션 블록들로 변환
+    content_blocks = markdown_to_blocks(raw_text)
+    all_blocks = new_blocks + content_blocks
 
-    # 노션 페이지 본문 아래에 Append
-    print(f"  - 노션 본문 아래에 [{next_v}] 마크다운 블록 누적(Append) 중...")
-    notion_request(f"blocks/{page_id}/children", method="PATCH", body={"children": new_blocks})
+    # 노션 페이지 본문 아래에 배치 분할 누적 (Append)
+    print(f"  - 노션 본문 아래에 [{next_v}] 마크다운 블록 (총 {len(all_blocks)}개) 누적(Append) 중...")
+    append_blocks_in_chunks(page_id, all_blocks, chunk_size=80)
 
     # 버전 속성 업데이트
     update_page_properties(page_id, {"버전": {"select": {"name": next_v}}})

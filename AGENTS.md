@@ -93,16 +93,25 @@
 
 ## 5. PPTX 제작 및 품질 관리 표준
 
-### 5.1 ppt-master 스킬 사용 규칙 (Quick Generate 기본)
+### 5.1 ppt-master 스킬 사용 규칙 (Quick Generate 기본 및 비율 동적 분기)
 - 진입 시 `SKILL_DIR`은 `ppt-master/skills/ppt-master`로 고정한다.
-- 프로젝트 초기화 시 항상 **Quick Generate 프로파일 및 4:3 비율(`--format ppt43`)**을 기본으로 사용한다:
-  ```bash
-  python ppt-master/skills/ppt-master/scripts/project_manager.py init <project_name> --format ppt43 --quick-generate
-  ```
+- **노션 `개발비율`에 따른 프로젝트 초기화 규격**:
+  - **`16:9` 지정 시 (네이티브 16:9 와이드 제작)**:
+    ```bash
+    python ppt-master/skills/ppt-master/scripts/project_manager.py init <project_name> --format ppt169 --quick-generate
+    ```
+    → SVG 캔버스: `viewBox="0 0 1280 720"`, 16:9 와이드 비율에 최적화된 시각화 레이아웃으로 직접 저작 (사후 convert-ratio 불필요)
+  - **`4:3` 지정 시 (표준 4:3 제작 및 16:9 확장 변환)**:
+    ```bash
+    python ppt-master/skills/ppt-master/scripts/project_manager.py init <project_name> --format ppt43 --quick-generate
+    ```
+    → SVG 캔버스: `viewBox="0 0 1024 768"`, 4:3 빌드 완료 후 `scripts/convert-ratio.py`로 16:9 변환본 동시 생성
 - 확정된 최종 md(`md/<프로젝트명>_v2.md`)와 캐싱된 이미지를 소스로 삼아 Quick Generate 절차(소스/리소스 준비 ➔ SVG 직접 저작 ➔ 품질 게이트 통과 ➔ export)를 따른다.
 
 ### 5.2 디자인 및 제작 규격 준수 (`spec/pptx-definition.md`)
-- **강의 헤더 보존**: 상단 4줄 헤더(과목명, 차시, 슬라이드 번호, 슬라이드 제목) 영역을 반드시 정확히 분리·배치한다.
+- **강의 헤더 및 레이아웃 조건부 적용**:
+  - `PPT개발지침`에 `SCU 표준` 또는 `강의용 보드 개발 지침`이 연결된 경우: 상단 4줄 헤더(과목명, 차시, 슬라이드 번호, 슬라이드 제목) 영역을 반드시 정확히 분리·배치한다.
+  - `스타일 지침`만 연결되었거나 일반 발표/대본형 프로젝트인 경우: 4줄 강의 보드를 강제하지 않고, 프레젠테이션 및 와이드 화면에 최적화된 헤더/인포그래픽 레이아웃을 자유롭게 적용한다.
 - **카드 및 인포그래픽 구조화**: 텍스트 단순 나열을 금지하고, 2단~4단 카드, 비교 대조 박스, 단계별 로드맵, 핵심 키워드 뱃지 등 인포그래픽 컴포넌트로 시각화한다.
 - **스타일 및 톤앤매너**: `PPT-Guidelines`에서 선택된 스타일(스위스 미니멀, 다크 테크, 소프트 라운디드 등)의 컬러 팔레트와 라운딩 규칙을 엄격히 적용한다.
 
@@ -112,16 +121,17 @@
 python ppt-master/skills/ppt-master/scripts/svg_quality_checker.py <project_dir> --quick-generate --canonical-authoring --stage final --json
 ```
 - **검증 항목**:
-  1. `viewBox`: `0 0 960 720` (4:3 규격 일치 여부)
+  1. `viewBox`: `0 0 1280 720` (16:9 규격) 또는 `0 0 1024 768` (4:3 규격)과 `spec_lock.md` 일치 여부
   2. `spec_lock.md` 동기화: 사용된 폰트 크기(px 단위 없는 순수 숫자), 컬러 팔레트가 선언과 일치하는지 확인
   3. 명도 대비(Contrast Ratio): 배경 대비 텍스트 최소 4.5:1 이상 충족
   4. 텍스트 박스 오버플로우 방지 및 안전 여백 확보
 
-### 5.4 16:9 와이드 변환본 자동 생성
-4:3 기본형 PPTX가 `exports/<project_name>_<timestamp>.pptx`로 export되면, 곧바로 `scripts/convert-ratio.py`를 실행하여 16:9 비율의 PPTX(`<project_name>_<timestamp>-169.pptx`)를 동일한 `exports/` 폴더에 생성한다:
-```bash
-python scripts/convert-ratio.py "<exports_경로>/<project_name>_<timestamp>.pptx"
-```
+### 5.4 16:9 와이드 변환본 처리 규칙
+- `개발비율: 16:9` 프로젝트: 이미 16:9 네이티브로 직접 저작되므로 `convert-ratio.py`를 거치지 않고 완성본(`exports/<project_name>_<timestamp>.pptx`)을 그대로 배포한다.
+- `개발비율: 4:3` 프로젝트: 4:3 기본형 PPTX가 export되면, 곧바로 `scripts/convert-ratio.py`를 실행하여 16:9 비율의 PPTX(`<project_name>_<timestamp>-169.pptx`)를 동일한 `exports/` 폴더에 생성한다:
+  ```bash
+  python scripts/convert-ratio.py "<exports_경로>/<project_name>_<timestamp>.pptx"
+  ```
 
 ---
 
@@ -138,8 +148,10 @@ python scripts/convert-ratio.py "<exports_경로>/<project_name>_<timestamp>.ppt
 ### [2단계: PPTX 디자인 및 배포 사이클]
 5. **사용자 승인**: 사용자가 노션의 마크다운 원고를 검토/수정한 뒤 진행상태를 **`ppt 준비 완료`**로 설정
 6. **AI 트리거**: 사용자가 개발 요청 시 AI가 `ppt 준비 완료` 상태 확인 (그 외 상태일 경우 "아직 준비가 안된 것 같습니다." 피드백 후 중단)
-7. **수집 및 캐싱**: AI가 `fetch` 실행 ➔ 원고 마크다운 및 이미지 로컬 저장 (`md/`)
-8. **정제 및 저작**: `spec/md-definition.md` 기반 정제(`_v2.md`) ➔ SVG 직접 저작 ➔ `svg_quality_checker` 게이트 통과 (0 Errors)
-9. **빌드 및 16:9 변환**: 4:3 PPTX 빌드 ➔ `convert-ratio.py`로 16:9 변환본 동시 생성
+7. **수집 및 캐싱**: AI가 `fetch` 실행 ➔ 원고 마크다운 및 이미지 로컬 저장 (`md/`), 노션의 `개발비율` 및 `PPT개발지침` 유형 파악
+8. **정제 및 저작**: `spec/md-definition.md` 기반 정제(`_v2.md`) ➔ 개발비율(16:9 네이티브 vs 4:3) 및 지침(강의보드 vs 일반발표)에 맞춰 SVG 직접 저작 ➔ `svg_quality_checker` 게이트 통과 (0 Errors)
+9. **빌드 및 비율 처리**:
+   - `16:9` 프로젝트: 네이티브 16:9 PPTX 빌드 완료
+   - `4:3` 프로젝트: 4:3 PPTX 빌드 ➔ `convert-ratio.py`로 16:9 변환본 동시 생성
 10. **배포 및 완료**: `deploy` 실행 ➔ Google Drive `<프로젝트명>/` 폴더로 복사 ➔ Notion `진행상태`를 **`ppt 생성 완료`**로 갱신 및 `PPT결과`에 파일명 기록
 11. **보고**: 사용자에게 로컬 산출물 경로 및 Google Drive 동기화 안내

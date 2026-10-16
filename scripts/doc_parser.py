@@ -100,7 +100,19 @@ def parse_hwp(file_path: str) -> str:
 
 
 def parse_hwpx(file_path: str) -> str:
-    """XML 기반 HWPX 파일에서 본문 텍스트를 추출합니다."""
+    """
+    HWPX 파일에서 구조화된 본문(문단, 표, 제목 위계)을 Markdown으로 추출합니다.
+    python-hwpx 엔진을 우선 사용하며, 실패 시 기본 XML 파서로 fallback합니다.
+    """
+    try:
+        from hwpx.ingest import DocumentIngestor
+        ingestor = DocumentIngestor.default()
+        res = ingestor.convert(file_path)
+        if res and res.markdown and res.markdown.strip():
+            return res.markdown.strip()
+    except Exception as e:
+        print(f"[doc_parser] python-hwpx 파싱 주의: {e}, 기본 XML 파서로 대체합니다.", file=sys.stderr)
+
     with zipfile.ZipFile(file_path, "r") as z:
         section_names = [name for name in z.namelist() if name.startswith("Contents/section") and name.endswith(".xml")]
         section_names.sort()
@@ -124,6 +136,7 @@ def parse_hwpx(file_path: str) -> str:
                 extracted_text.append(cleaned)
 
         return "\n\n".join(extracted_text)
+
 
 
 def parse_docx(file_path: str) -> str:
