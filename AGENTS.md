@@ -15,8 +15,19 @@
 - **상위 대시보드 페이지**: `NOTION-PPT` (`3fa624a3-5444-80bc-98f0-e9ba0624d2e2`)
 - **1) 메인 관제 DB**: `PPT-Pipeline` (`3fa624a3-5444-8064-aa7c-ed9c93dd8bdd`)
   - 속성: `프로젝트`(Title), `진행상태`(Select), `개발비율`(Select: 4:3 / 16:9), `원고`(Relation to PPT-Scripts), `PPT개발지침`(Relation to PPT-Guidelines), `PPT결과`(Rich Text), `메모`, `최종편집일`
-  - `진행상태` 라이프사이클: `준비 중` ➔ `준비 완료` (AI 작업 트리거) ➔ `PPT 생성완료` (AI 완료)
-  - *사용자가 대화창에서 직접 "PPT 개발해줘"라고 요청하면 진행상태와 무관하게 즉시 개발을 시작한다.*
+  - `진행상태` 5단계 라이프사이클:
+    1. `준비 중` (사용자) : 작성 중/파일 업로드 중인 상태. AI는 일체 건드리지 않고 스킵.
+    2. `원고 준비 완료` (사용자) : AI 1단계 작업 트리거 (원고 마크다운 변환 및 정제 요청).
+    3. `원고 완료` (AI) : AI가 1단계 작업을 마치고 설정. 사용자 검토 대기 상태.
+    4. `ppt 준비 완료` (사용자) : 사용자가 마크다운 검토 후 승인. AI 2단계 작업 트리거 (PPTX 개발 요청).
+    5. `ppt 생성 완료` (AI) : AI가 2단계(PPTX 빌드 및 드라이브 배포)를 완료하고 설정.
+  - **엄격한 트리거 및 실행 규칙**:
+    - **단일 프로젝트 지정 요청 시**: 해당 행의 `진행상태`를 확인하여 `원고 준비 완료` 또는 `ppt 준비 완료`가 아니라면, 반드시 **"아직 준비가 안된 것 같습니다."**라고 피드백하고 작업을 즉시 멈춘다. (원스톱 진행 절대 금지)
+      - `원고 준비 완료` ➔ 원고 마크다운 변환만 수행 후 상태를 `원고 완료`로 변경하고 멈춤 (검토 대기).
+      - `ppt 준비 완료` ➔ PPTX 저작 및 배포만 수행 후 상태를 `ppt 생성 완료`로 변경하고 완료 보고.
+    - **전체 프로젝트 일괄 요청 시 ("노션 PPT 프로젝트 개발해줘" 등)**:
+      - `PPT-Pipeline` DB 전체를 스캔하여 오직 `원고 준비 완료`와 `ppt 준비 완료` 상태인 행들만 각각 1단계와 2단계로 처리한다.
+      - `준비 중`, `원고 완료`, `ppt 생성 완료` 행들은 건너뛴다(Skip).
 - **2) 원고 DB**: `PPT-Scripts` (`3fa624a3-5444-803c-93ff-f437c0b9f9d8`)
   - 속성: `원고`(Title), `원본파일`(Files: HWP/HWPX/DOCX/PPTX/PDF), `원고변환지침`(Relation to PPT-Guidelines), `버전`(Select: v01~v20), `프로젝트명`(Relation to PPT-Pipeline)
   - 본문(Content): 변환된 마크다운이 타임스탬프 헤더와 함께 **지워지지 않고 아래에 누적(Append)**되며 `버전` 속성이 자동 갱신됨
@@ -50,25 +61,33 @@
 
 ## 4. 파이프라인 자동화 브릿지 스크립트 (`scripts/notion_ppt_bridge.py`)
 
-- **프로젝트 목록 조회**:
+- **프로젝트 목록 및 5단계 상태 조회**:
   ```bash
   python scripts/notion_ppt_bridge.py list
   ```
-- **원고 파일(HWP, DOCX, PDF 등) ➔ 노션 마크다운 자동 변환 (누적 및 버전 증가)**:
+- **[1단계] 파이프라인 프로젝트 원고 변환 (원고 변환 후 '원고 완료'로 갱신)**:
+  ```bash
+  python scripts/notion_ppt_bridge.py process-script "<프로젝트명 또는 Page ID>"
+  ```
+  → 진행상태가 `원고 준비 완료`인지 검증하고 원본파일 변환 후 노션 본문 누적 및 진행상태를 `원고 완료`로 자동 갱신
+- **원고 단독 변환 (누적 및 버전 증가)**:
   ```bash
   python scripts/notion_ppt_bridge.py convert-script "<원고명 또는 Page ID>"
   ```
-  → 첨부된 원본파일 다운로드 및 `원고변환지침` 적용, 노션 본문 하단에 새 버전 누적 Append 및 `버전` 속성 자동 증가
-- **원고/지침 수집 및 이미지 로컬 자동 캐싱**:
+- **[2단계] 원고/지침 수집 및 로컬 캐싱 (상태 사전 검증 지원)**:
   ```bash
-  python scripts/notion_ppt_bridge.py fetch "<프로젝트명 또는 Page ID>"
+  python scripts/notion_ppt_bridge.py fetch "<프로젝트명 또는 Page ID>" --check-ready
   ```
-  → 노션 본문 내 S3 이미지를 `md/<프로젝트명>/`로 다운로드하고 상대경로로 치환하여 `md/<프로젝트명>_v1.md` 및 `_guidelines.md` 생성
-- **생성 결과 배포 및 노션 속성 업데이트**:
+  → `ppt 준비 완료` 상태인지 검증 후 노션 본문 내 S3 이미지를 `md/<프로젝트명>/`로 다운로드하고 `md/<프로젝트명>_v1.md` 및 `_guidelines.md` 생성
+- **[2단계 완료] 생성 결과 배포 및 노션 완료 업데이트**:
   ```bash
-  python scripts/notion_ppt_bridge.py deploy "<Page ID>" "<pptx파일경로1>" "<pptx파일경로2>" --status "PPT 생성완료"
+  python scripts/notion_ppt_bridge.py deploy "<Page ID>" "<pptx파일경로1>" "<pptx파일경로2>" --status "ppt 생성 완료"
   ```
-  → 구글 드라이브 `<프로젝트명>/` 하위 폴더로 복사 및 `PPT결과` 속성에 `[일시] 파일명` 누적, `진행상태`를 `PPT 생성완료`로 갱신
+  → 구글 드라이브 `<프로젝트명>/` 하위 폴더로 복사 및 `PPT결과` 속성에 `[일시] 파일명` 누적, `진행상태`를 `ppt 생성 완료`로 갱신
+- **진행상태 수동 변경**:
+  ```bash
+  python scripts/notion_ppt_bridge.py update-status "<프로젝트명 또는 Page ID>" "<상태명>"
+  ```
 
 ---
 
@@ -106,13 +125,21 @@ python scripts/convert-ratio.py "<exports_경로>/<project_name>_<timestamp>.ppt
 
 ---
 
-## 6. 전체 실행 라이프사이클 요약
+## 6. 전체 실행 라이프사이클 요약 (2단계 분리 표준)
 
-1. **원고 변환**: 사용자가 `PPT-Scripts`에 원본파일 등록 ➔ `convert-script` 실행 ➔ 마크다운 누적 Append 및 버전 갱신
-2. **프로젝트 설정**: 사용자가 `PPT-Pipeline`에 새 프로젝트 등록 (원고, 개발지침 매핑, 상태를 `준비 완료`로 설정)
-3. **AI 트리거**: 사용자가 대화창에 `"<프로젝트명> PPT 개발해줘"` 요청
-4. **수집 및 캐싱**: AI가 `fetch` 실행 ➔ 마크다운 및 이미지 로컬 저장 (`md/`)
-5. **정제 및 저작**: `spec/md-definition.md` 기반 정제 ➔ SVG 직접 저작 ➔ `svg_quality_checker` 게이트 통과 (0 Errors)
-6. **빌드 및 16:9 변환**: 4:3 PPTX 빌드 ➔ `convert-ratio.py`로 16:9 변환본 동시 생성
-7. **배포 및 피드백**: `deploy` 실행 ➔ Google Drive `<프로젝트명>/` 폴더로 복사 ➔ Notion `진행상태`를 `PPT 생성완료`로 갱신 및 `PPT결과`에 파일명 기록
-8. **보고**: 사용자에게 로컬 산출물 경로 및 Google Drive 링크 안내
+### [1단계: 원고 변환 및 정제 사이클]
+1. **사용자 준비**: 사용자가 `PPT-Scripts`에 원본파일 등록 및 `PPT-Pipeline`에 프로젝트 등록 후 진행상태를 **`원고 준비 완료`**로 설정
+2. **AI 트리거**: 사용자가 개발 요청 시 AI가 `원고 준비 완료` 상태 확인 (그 외 상태일 경우 "아직 준비가 안된 것 같습니다." 피드백 후 중단)
+3. **원고 변환**: AI가 원본 파일 텍스트 추출(`doc_parser.py`) 및 `원고변환지침` 적용 ➔ `PPT-Scripts` 본문 하단에 마크다운 누적 Append 및 버전 갱신
+4. **1단계 완료**: AI가 `PPT-Pipeline`의 진행상태를 **`원고 완료`**로 갱신하고 사용자에게 마크다운 검토 요청
+
+---
+
+### [2단계: PPTX 디자인 및 배포 사이클]
+5. **사용자 승인**: 사용자가 노션의 마크다운 원고를 검토/수정한 뒤 진행상태를 **`ppt 준비 완료`**로 설정
+6. **AI 트리거**: 사용자가 개발 요청 시 AI가 `ppt 준비 완료` 상태 확인 (그 외 상태일 경우 "아직 준비가 안된 것 같습니다." 피드백 후 중단)
+7. **수집 및 캐싱**: AI가 `fetch` 실행 ➔ 원고 마크다운 및 이미지 로컬 저장 (`md/`)
+8. **정제 및 저작**: `spec/md-definition.md` 기반 정제(`_v2.md`) ➔ SVG 직접 저작 ➔ `svg_quality_checker` 게이트 통과 (0 Errors)
+9. **빌드 및 16:9 변환**: 4:3 PPTX 빌드 ➔ `convert-ratio.py`로 16:9 변환본 동시 생성
+10. **배포 및 완료**: `deploy` 실행 ➔ Google Drive `<프로젝트명>/` 폴더로 복사 ➔ Notion `진행상태`를 **`ppt 생성 완료`**로 갱신 및 `PPT결과`에 파일명 기록
+11. **보고**: 사용자에게 로컬 산출물 경로 및 Google Drive 동기화 안내

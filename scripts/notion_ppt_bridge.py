@@ -245,12 +245,110 @@ def cache_images_and_fix_links(md_content, project_name, md_dir):
 # ==========================================
 # 주요 비즈니스 파이프라인 함수
 # ==========================================
+def find_pipeline_project(project_identifier):
+    """프로젝트명 또는 Page ID로 PPT-Pipeline에서 항목 검색"""
+    all_data = query_database(PIPELINE_DB_ID)
+    for page in all_data.get("results", []):
+        p_id = page["id"]
+        title_objs = page["properties"].get("프로젝트", {}).get("title", [])
+        title = title_objs[0]["plain_text"] if title_objs else ""
+        if project_identifier in [p_id, title]:
+            return page
+    return None
+
+def update_project_status(project_identifier, new_status):
+    """PPT-Pipeline 프로젝트의 진행상태를 변경"""
+    page = find_pipeline_project(project_identifier)
+    if not page:
+        print(f"[Error] 프로젝트 '{project_identifier}'를 PPT-Pipeline에서 찾을 수 없습니다.", file=sys.stderr)
+        return False
+    p_id = page["id"]
+    title_objs = page["properties"].get("프로젝트", {}).get("title", [])
+    title = title_objs[0]["plain_text"] if title_objs else "untitled"
+    
+    update_page_properties(p_id, {"진행상태": {"select": {"name": new_status}}})
+    print(f"[Notion Update] 프로젝트 '{title}'의 진행상태를 [{new_status}]로 변경했습니다.")
+    return True
+
+def process_pipeline_script(project_identifier):
+    """
+    [1단계: 원고 변환 파이프라인]
+    - 상태가 '원고 준비 완료'인지 엄격히 검증 (아니면 안내 후 즉시 중단)
+    - 연결된 PPT-Scripts의 원본파일을 마크다운으로 변환
+    - 변환 성공 시 진행상태를 '원고 완료'로 갱신하여 사용자 검토 대기
+    """
+    page = find_pipeline_project(project_identifier)
+    if not page:
+        print(f"[Error] 프로젝트 '{project_identifier}'를 PPT-Pipeline에서 찾을 수 없습니다.", file=sys.stderr)
+        return False
+        
+    props = page["properties"]
+    title_objs = props.get("프로젝트", {}).get("title", [])
+    proj_name = title_objs[0]["plain_text"] if title_objs else "untitled"
+    
+    status_obj = props.get("진행상태", {}).get("select")
+    status = status_obj["name"] if status_obj else "미지정"
+    
+    # 2번 상태(원고 준비 완료) 엄격 검증 (기존 '준비 완료' 호환)
+    if status not in ["원고 준비 완료", "준비 완료"]:
+        print(f"\n[안내] 프로젝트 '{proj_name}'은(는) 아직 준비가 안된 것 같습니다.")
+        print(f"  - 현재 진행상태: [{status}] (필요 상태: '원고 준비 완료')")
+        return False
+        
+    script_relations = props.get("원고", {}).get("relation", []) or props.get("원고(마크다운)", {}).get("relation", [])
+    if not script_relations:
+        print(f"[Error] 프로젝트 '{proj_name}'에 연결된 원고(PPT-Scripts)가 없습니다.", file=sys.stderr)
+        return False
+        
+    script_id = script_relations[0]["id"]
+    print(f"\n[1단계 착수] 프로젝트 '{proj_name}' 원고 변환 시작...")
+    convert_script_from_file(script_id)
+    
+    # 상태를 '원고 완료'로 갱신
+    update_project_status(page["id"], "원고 완료")
+    print(f"\n[1단계 완료] 프로젝트 '{proj_name}' 원고 변환 완료 ➔ 진행상태: [원고 완료]")
+    print("👉 사용자가 노션에서 원고 마크다운을 검토한 후 'ppt 준비 완료'로 변경하면 2단계(PPT 개발)를 진행할 수 있습니다.")
+    return True
+
+def check_pipeline_for_ppt(project_identifier):
+    """
+    [2단계 진입 전 상태 검증]
+    - 상태가 'ppt 준비 완료'인지 엄격히 검증
+    """
+    page = find_pipeline_project(project_identifier)
+    if not page:
+        print(f"[Error] 프로젝트 '{project_identifier}'를 PPT-Pipeline에서 찾을 수 없습니다.", file=sys.stderr)
+        return None
+        
+    props = page["properties"]
+    title_objs = props.get("프로젝트", {}).get("title", [])
+    proj_name = title_objs[0]["plain_text"] if title_objs else "untitled"
+    
+    status_obj = props.get("진행상태", {}).get("select")
+    status = status_obj["name"] if status_obj else "미지정"
+    
+    if status not in ["ppt 준비 완료", "PPT 준비 완료", "준비 완료"]:
+        print(f"\n[안내] 프로젝트 '{proj_name}'은(는) 아직 준비가 안된 것 같습니다.")
+        print(f"  - 현재 진행상태: [{status}] (필요 상태: 'ppt 준비 완료')")
+        return None
+        
+    return page
+
 def list_pipeline_projects():
-    """PPT-Pipeline DB의 프로젝트 목록 및 상태 조회"""
+    """PPT-Pipeline DB의 프로젝트 목록 및 5단계 상태 머신 현황 조회"""
     data = query_database(PIPELINE_DB_ID)
     projects = []
+    status_counts = {
+        "준비 중": 0,
+        "원고 준비 완료": 0,
+        "원고 완료": 0,
+        "ppt 준비 완료": 0,
+        "ppt 생성 완료": 0,
+        "기타": 0
+    }
+    
     print("\n" + "=" * 70)
-    print(" [PPT-Dev-Pipeline] 프로젝트 목록")
+    print(" [PPT-Dev-Pipeline] 프로젝트 목록 (5단계 라이프사이클)")
     print("=" * 70)
     
     for page in data.get("results", []):
@@ -263,10 +361,20 @@ def list_pipeline_projects():
         status_obj = props.get("진행상태", {}).get("select")
         status = status_obj["name"] if status_obj else "미지정"
         
+        # 카운트 집계
+        if status in status_counts:
+            status_counts[status] += 1
+        elif status == "준비 완료":
+            status_counts["원고 준비 완료"] += 1
+        elif status in ["PPT 생성완료", "PPT생성완료"]:
+            status_counts["ppt 생성 완료"] += 1
+        else:
+            status_counts["기타"] += 1
+        
         ratio_obj = props.get("개발비율", {}).get("select") or props.get("비율", {}).get("select")
         ratio = ratio_obj["name"] if ratio_obj else "4:3 (기본)"
         
-        scripts = props.get("원고", {}).get("relation", [])
+        scripts = props.get("원고", {}).get("relation", []) or props.get("원고(마크다운)", {}).get("relation", [])
         guidelines = props.get("PPT개발지침", {}).get("relation", []) or props.get("개발지침", {}).get("relation", [])
         
         results_objs = props.get("PPT결과", {}).get("rich_text", [])
@@ -288,26 +396,29 @@ def list_pipeline_projects():
         print(f"  - 결과물: {results_preview}")
         print("-" * 70)
         
+    print(f"[상태별 집계] 준비 중: {status_counts['준비 중']}개 | 원고 준비 완료(1단계 대기): {status_counts['원고 준비 완료']}개 | 원고 완료(검토 대기): {status_counts['원고 완료']}개 | ppt 준비 완료(2단계 대기): {status_counts['ppt 준비 완료']}개 | ppt 생성 완료: {status_counts['ppt 생성 완료']}개")
+    print("=" * 70)
     return projects
 
-def fetch_project_data(project_identifier):
+def fetch_project_data(project_identifier, check_ready=False):
     """
     프로젝트명 또는 Page ID로 원고와 지침을 수집하여 로컬 md 파일로 빌드
     """
-    # 1. 대상 프로젝트 페이지 찾기
-    all_data = query_database(PIPELINE_DB_ID)
-    target_page = None
-    
-    for page in all_data.get("results", []):
-        p_id = page["id"]
-        title_objs = page["properties"].get("프로젝트", {}).get("title", [])
-        title = title_objs[0]["plain_text"] if title_objs else ""
-        if project_identifier in [p_id, title]:
-            target_page = page
-            break
-            
+    target_page = find_pipeline_project(project_identifier)
     if not target_page:
         raise ValueError(f"프로젝트 '{project_identifier}'를 PPT-Pipeline에서 찾을 수 없습니다.")
+        
+    props = target_page["properties"]
+    title_objs = props.get("프로젝트", {}).get("title", [])
+    proj_name = title_objs[0]["plain_text"] if title_objs else "untitled"
+    
+    if check_ready:
+        status_obj = props.get("진행상태", {}).get("select")
+        status = status_obj["name"] if status_obj else "미지정"
+        if status not in ["ppt 준비 완료", "PPT 준비 완료", "준비 완료"]:
+            print(f"\n[안내] 프로젝트 '{proj_name}'은(는) 아직 준비가 안된 것 같습니다.")
+            print(f"  - 현재 진행상태: [{status}] (필요 상태: 'ppt 준비 완료')")
+            return None
         
     props = target_page["properties"]
     title_objs = props.get("프로젝트", {}).get("title", [])
@@ -318,7 +429,7 @@ def fetch_project_data(project_identifier):
     ratio_obj = props.get("개발비율", {}).get("select") or props.get("비율", {}).get("select")
     ratio = ratio_obj["name"] if ratio_obj else "4:3"
     
-    script_relations = props.get("원고", {}).get("relation", [])
+    script_relations = props.get("원고", {}).get("relation", []) or props.get("원고(마크다운)", {}).get("relation", [])
     guideline_relations = props.get("PPT개발지침", {}).get("relation", []) or props.get("개발지침", {}).get("relation", [])
     
     print(f"\n[Fetch] 프로젝트 '{proj_name}' 데이터 수집 시작...")
@@ -533,7 +644,7 @@ def convert_script_from_file(script_identifier):
     print(f"  - 버전 갱신: {curr_v} ➔ [{next_v}]")
     print(f"  - 노션 본문 하단에 [{next_v}] 마크다운이 성공적으로 누적되었습니다.")
 
-def deploy_and_update_pipeline(project_id, pptx_files, new_status="PPT 생성완료"):
+def deploy_and_update_pipeline(project_id, pptx_files, new_status="ppt 생성 완료"):
     """
     생성된 PPTX 파일들을 구글 드라이브(로컬 마운트)의 <프로젝트명>/ 하위 폴더로 복사하고,
     Notion PPT-Pipeline의 PPT결과 속성에 파일명과 일시를 누적(Append)하여 업데이트
@@ -616,32 +727,46 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="실행할 명령어")
     
     # 1. list
-    subparsers.add_parser("list", help="PPT-Pipeline 프로젝트 목록 및 상태 조회")
+    subparsers.add_parser("list", help="PPT-Pipeline 프로젝트 목록 및 5단계 상태 조회")
     
     # 2. fetch
     fetch_parser = subparsers.add_parser("fetch", help="노션에서 원고/지침 수집 및 이미지 로컬 캐싱")
     fetch_parser.add_argument("project", help="프로젝트명 또는 Notion Page ID")
+    fetch_parser.add_argument("--check-ready", action="store_true", help="'ppt 준비 완료' 상태인지 사전 검증")
     
     # 3. deploy
     deploy_parser = subparsers.add_parser("deploy", help="생성된 PPTX 파일을 구글 드라이브로 배포하고 노션 업데이트")
     deploy_parser.add_argument("project_id", help="Notion PPT-Pipeline Page ID")
     deploy_parser.add_argument("files", nargs="+", help="배포할 .pptx 파일 경로 목록")
-    deploy_parser.add_argument("--status", default="PPT 생성완료", help="변경할 진행상태 (기본: 'PPT 생성완료')")
+    deploy_parser.add_argument("--status", default="ppt 생성 완료", help="변경할 진행상태 (기본: 'ppt 생성 완료')")
 
-    # 4. convert-script
+    # 4. convert-script (원고 DB 단독 변환)
     conv_parser = subparsers.add_parser("convert-script", help="PPT-Scripts에 첨부된 원본파일을 마크다운으로 변환하여 본문 누적 및 버전 증가")
     conv_parser.add_argument("script", help="원고명 또는 PPT-Scripts Page ID")
     
+    # 5. process-script (파이프라인 1단계 전용)
+    proc_script_parser = subparsers.add_parser("process-script", help="[1단계] 프로젝트의 원고를 변환하고 진행상태를 '원고 완료'로 갱신")
+    proc_script_parser.add_argument("project", help="프로젝트명 또는 Notion Page ID")
+
+    # 6. update-status
+    stat_parser = subparsers.add_parser("update-status", help="PPT-Pipeline 프로젝트의 진행상태를 변경")
+    stat_parser.add_argument("project", help="프로젝트명 또는 Notion Page ID")
+    stat_parser.add_argument("status", help="변경할 상태명 (예: '준비 중', '원고 준비 완료', '원고 완료', 'ppt 준비 완료', 'ppt 생성 완료')")
+
     args = parser.parse_args()
     
     if args.command == "list":
         list_pipeline_projects()
     elif args.command == "fetch":
-        fetch_project_data(args.project)
+        fetch_project_data(args.project, check_ready=args.check_ready)
     elif args.command == "deploy":
         deploy_and_update_pipeline(args.project_id, args.files, args.status)
     elif args.command == "convert-script":
         convert_script_from_file(args.script)
+    elif args.command == "process-script":
+        process_pipeline_script(args.project)
+    elif args.command == "update-status":
+        update_project_status(args.project, args.status)
     else:
         parser.print_help()
 

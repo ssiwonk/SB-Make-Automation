@@ -33,45 +33,43 @@
 
 ```mermaid
 flowchart TD
-    subgraph Notion ["1. Notion Workspace"]
+    subgraph Notion ["1. Notion Workspace (5단계 라이프사이클)"]
         DB1[("PPT-Scripts<br/>(원고 및 원본파일)")]
         DB2[("PPT-Guidelines<br/>(표준 및 스타일 지침)")]
         DB3[("PPT-Pipeline<br/>(관제 및 프로젝트)")]
     end
 
-    subgraph Bridge ["2. Bridge Controller (scripts/)"]
-        CS["convert-script<br/>(HWP/DOCX/PDF ➔ MD 누적)"]
-        FC["fetch<br/>(원고/지침 수집 및 이미지 캐싱)"]
-        DP["deploy<br/>(클라우드 배포 및 상태 갱신)"]
+    subgraph Stage1 ["2. [1단계] 원고 변환 사이클"]
+        ST1["원고 준비 완료<br/>(사용자 설정)"]
+        PS["process-script<br/>(원본 파싱 ➔ MD 누적 Append)"]
+        ST2["원고 완료<br/>(사용자 검토 대기)"]
     end
 
-    subgraph Engine ["3. Generation Engine (ppt-master)"]
+    subgraph Stage2 ["3. [2단계] PPT 저작 & 배포 사이클"]
+        ST3["ppt 준비 완료<br/>(사용자 승인)"]
+        FC["fetch --check-ready<br/>(원고/지침 수집 및 이미지 캐싱)"]
         MD2["마크다운 정제 (spec/md-definition.md)"]
         SVG["SVG 직접 저작 (spec/pptx-definition.md)"]
         QG{"SVG 품질 게이트<br/>(svg_quality_checker)"}
         P43["4:3 PPTX 빌드"]
         P169["16:9 와이드 변환 (convert-ratio.py)"]
+        DP["deploy<br/>(Google Drive 배포 & 노션 갱신)"]
+        ST4["ppt 생성 완료<br/>(최종 완료)"]
     end
 
-    subgraph Storage ["4. Cloud & Local Storage"]
-        GD["Google Drive 마운트<br/>(G: 드라이브 프로젝트 폴더)"]
-        ARCH["로컬 아카이브<br/>(project/타임스탬프 폴더)"]
-    end
-
-    DB1 -->|"원본 첨부"| CS
-    CS -->|"마크다운 Append"| DB1
     DB1 -.->|"원고 연결"| DB3
     DB2 -.->|"지침 연결"| DB3
-    DB3 -->|"준비 완료"| FC
-    FC -->|"md 수집"| MD2
-    MD2 --> SVG
-    SVG --> QG
-    QG -->|"검증 통과 (0 Errors)"| P43
-    P43 --> P169
+    DB3 -->|"진행상태: 원고 준비 완료"| ST1
+    ST1 --> PS
+    PS -->|"MD Append"| DB1
+    PS -->|"상태 갱신"| ST2
+    ST2 -.->|"사용자 검토 후 상태 변경"| ST3
+    ST3 --> FC
+    FC --> MD2 --> SVG --> QG
+    QG -->|"통과 (0 Errors)"| P43 --> P169
     P43 & P169 --> DP
-    DP -->|"동기화 복사"| GD
-    DP -->|"최종 저장"| ARCH
-    DP -->|"상태: PPT 생성완료"| DB3
+    DP -->|"클라우드 동기화"| DB3
+    DP --> ST4
 ```
 
 ---
@@ -136,52 +134,57 @@ NOTION_TOKEN=ntn_your_actual_notion_integration_token_here
 
 ---
 
-## 🚀 빠른 시작 (Quick Start)
+## 🚀 빠른 시작 (Quick Start: 2단계 분리 표준)
 
-### 1단계: 원고 파일(HWP/DOCX/PDF) 노션 자동 변환
-노션 `PPT-Scripts` 데이터베이스에 원본 파일을 첨부한 뒤, 아래 명령을 실행합니다:
-```bash
-python scripts/notion_ppt_bridge.py convert-script "<원고명 또는 Notion Page ID>"
-```
-- 첨부된 문서에서 텍스트와 표를 추출하여 노션 본문 하단에 타임스탬프와 함께 누적(Append)하고 버전을 `v01` ➔ `v02`로 증가시킵니다.
+본 파이프라인은 품질 관리를 위해 **1단계(원고 변환)**와 **2단계(PPTX 디자인)**가 완벽히 분리된 Human-in-the-Loop 구조로 동작합니다.
+- **5단계 라이프사이클**: `준비 중` ➔ `원고 준비 완료` (1단계) ➔ `원고 완료` (검토) ➔ `ppt 준비 완료` (2단계) ➔ `ppt 생성 완료`
+- **엄격한 안전 규칙**: 원스톱 진행은 없으며, 지정된 프로젝트의 상태가 준비되지 않았다면 *"아직 준비가 안된 것 같습니다."* 피드백 후 작업을 즉시 중단합니다.
 
-### 2단계: 노션에서 프로젝트 세팅
-1. `PPT-Pipeline` 데이터베이스에서 새 항목 생성
-2. `원고`: 1단계에서 변환한 원고 연결
-3. `PPT개발지침`: `SCU 대학 강의용 보드 지침` + 원하는 비주얼 스타일 지침 1종 연결
-4. `진행상태`: **`준비 완료`**로 변경
+---
 
-### 3단계: 원고 수집 및 이미지 영구 캐싱
-```bash
-python scripts/notion_ppt_bridge.py fetch "<프로젝트명 또는 Notion Page ID>"
-```
-- 노션 본문의 S3 이미지를 `md/<프로젝트명>/`로 안전하게 다운로드하고 상대 경로로 치환한 `md/<프로젝트명>_v1.md` 초안을 생성합니다.
+### [1단계: 원고 변환 및 정제 사이클]
 
-### 4단계: PPTX 저작 및 품질 검사 (AI 어시스턴트 협업)
-AI 어시스턴트(Antigravity 등)에게 요청하여 슬라이드를 저작합니다:
-> *"〈프로젝트명〉 PPT 개발해줘"*
-
-AI가 수행하는 내부 절차:
-1. `spec/md-definition.md` 기반으로 2차 마크다운 정제 (`_v2.md`)
-2. `ppt-master` 프로젝트 초기화 및 SVG 직접 저작
-3. **SVG 품질 게이트 검증 (필수)**:
+1. **사용자 원본 등록 및 상태 설정**:
+   - `PPT-Scripts` 데이터베이스에 원본 문서(HWP/DOCX/PDF 등) 첨부
+   - `PPT-Pipeline` 데이터베이스에서 항목을 생성하고 진행상태를 **`원고 준비 완료`**로 설정
+2. **원고 변환 실행 (AI)**:
    ```bash
-   python ppt-master/skills/ppt-master/scripts/svg_quality_checker.py <project_dir> --quick-generate --canonical-authoring --stage final --json
+   python scripts/notion_ppt_bridge.py process-script "<프로젝트명 또는 Page ID>"
    ```
-4. 4:3 기본 PPTX 빌드
+   - 첨부 파일 파싱 ➔ 지침 반영 ➔ 노션 본문 하단에 마크다운 누적 Append 및 버전 갱신
+   - 완료 시 `PPT-Pipeline`의 진행상태가 **`원고 완료`**로 자동 변경됩니다.
+3. **사용자 원고 검토**:
+   - 노션에 생성된 마크다운을 검토하고 필요한 경우 수정합니다.
 
-### 5단계: 16:9 와이드 변환본 생성
-```bash
-python scripts/convert-ratio.py "project/<작업폴더>/<엔진폴더>/exports/<파일명>.pptx"
-```
-- 동일한 `exports/` 폴더에 `-169.pptx` 와이드 변환본이 즉시 생성됩니다.
+---
 
-### 6단계: 클라우드 배포 및 노션 상태 갱신
-```bash
-python scripts/notion_ppt_bridge.py deploy "<프로젝트 Page ID>" "<4:3파일경로>" "<16:9파일경로>" --status "PPT 생성완료"
-```
-- Google Drive의 `<프로젝트명>/` 폴더로 복사되어 클라우드 동기화가 시작됩니다.
-- 노션 `PPT-Pipeline`의 상태가 `PPT 생성완료`로 변경되고, `PPT결과` 속성에 생성 일시와 파일명이 누적 기록됩니다.
+### [2단계: PPTX 디자인 & 클라우드 배포 사이클]
+
+4. **사용자 개발 승인**:
+   - 원고 검토가 완료되면 `PPT-Pipeline`의 진행상태를 **`ppt 준비 완료`**로 변경합니다.
+5. **원고 수집 및 이미지 영구 캐싱 (AI)**:
+   ```bash
+   python scripts/notion_ppt_bridge.py fetch "<프로젝트명 또는 Page ID>" --check-ready
+   ```
+   - `ppt 준비 완료` 상태를 검증한 후, 본문 내 이미지(S3)를 `md/<프로젝트명>/`로 영구 저장하고 `_v1.md`, `_guidelines.md`를 생성합니다.
+6. **PPTX 저작 및 품질 검사 (AI 어시스턴트 협업)**:
+   - `spec/md-definition.md` 기반으로 2차 마크다운 정제 (`_v2.md`)
+   - `ppt-master` 프로젝트 초기화 및 SVG 직접 저작
+   - **SVG 품질 게이트 검증 (0 Errors 필수)**:
+     ```bash
+     python ppt-master/skills/ppt-master/scripts/svg_quality_checker.py <project_dir> --quick-generate --canonical-authoring --stage final --json
+     ```
+   - 4:3 기본형 PPTX 빌드
+7. **16:9 와이드 변환본 동시 생성**:
+   ```bash
+   python scripts/convert-ratio.py "project/<작업폴더>/<엔진폴더>/exports/<파일명>.pptx"
+   ```
+8. **클라우드 배포 및 노션 최종 완료 갱신**:
+   ```bash
+   python scripts/notion_ppt_bridge.py deploy "<프로젝트 Page ID>" "<4:3파일경로>" "<16:9파일경로>" --status "ppt 생성 완료"
+   ```
+   - Google Drive의 `<프로젝트명>/` 폴더로 자동 동기화 복사
+   - 노션 `진행상태`를 **`ppt 생성 완료`**로 갱신하고 `PPT결과`에 파일명 및 일시 기록
 
 ---
 
@@ -215,10 +218,12 @@ SB-Make-Automation/
 
 | 작업 목적 | 실행 명령어 | 설명 |
 |---|---|---|
-| **프로젝트 목록 조회** | `python scripts/notion_ppt_bridge.py list` | `PPT-Pipeline` DB의 모든 프로젝트 진행 상태 및 연결 정보 조회 |
-| **원고 파일 변환** | `python scripts/notion_ppt_bridge.py convert-script "<원고명/ID>"` | HWP/DOCX/PDF ➔ 마크다운 변환, 노션 하단 누적 및 버전 증가 |
-| **원고/지침 수집** | `python scripts/notion_ppt_bridge.py fetch "<프로젝트명/ID>"` | 노션 이미지 로컬 다운로드 및 `_v1.md`, `_guidelines.md` 생성 |
-| **산출물 배포** | `python scripts/notion_ppt_bridge.py deploy "<ID>" "<pptx1>" "<pptx2>"` | Google Drive `<프로젝트명>/` 폴더 복사 및 노션 상태/결과 업데이트 |
+| **프로젝트 목록 조회** | `python scripts/notion_ppt_bridge.py list` | 5단계 라이프사이클 상태 및 현황 통계 집계 조회 |
+| **[1단계] 원고 변환 파이프라인** | `python scripts/notion_ppt_bridge.py process-script "<프로젝트>"` | `원고 준비 완료` 검증 ➔ MD 변환 누적 ➔ `원고 완료`로 자동 갱신 |
+| **원고 파일 단독 변환** | `python scripts/notion_ppt_bridge.py convert-script "<원고명/ID>"` | HWP/DOCX/PDF ➔ 마크다운 변환, 노션 하단 누적 및 버전 증가 |
+| **[2단계] 원고/지침 수집** | `python scripts/notion_ppt_bridge.py fetch "<프로젝트>" --check-ready` | `ppt 준비 완료` 상태 검증 후 로컬 이미지 다운로드 및 `_v1.md` 생성 |
+| **[2단계] 산출물 배포** | `python scripts/notion_ppt_bridge.py deploy "<ID>" "<4:3>" "<16:9>"` | Google Drive `<프로젝트>/` 복사 및 `ppt 생성 완료`로 갱신 |
+| **진행상태 수동 변경** | `python scripts/notion_ppt_bridge.py update-status "<프로젝트>" "<상태>"` | `PPT-Pipeline` 항목의 진행상태를 수동으로 갱신 |
 | **16:9 비율 변환** | `python scripts/convert-ratio.py "<4:3_pptx_경로>"` | 4:3 슬라이드를 16:9 와이드 슬라이드로 변환 |
 | **SVG 품질 검사** | `python ppt-master/skills/ppt-master/scripts/svg_quality_checker.py ...` | SVG 뷰박스, 폰트 크기, 명도비, 레이아웃 검증 |
 
