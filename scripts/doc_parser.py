@@ -1,15 +1,21 @@
 """
 doc_parser.py
 다양한 형식의 원고(HWP, HWPX, DOCX, PDF, PPTX)에서 텍스트와 구조를 추출하는 범용 파서 모듈.
-외부 오피스 프로그램 종속성 없이 순수 파이썬 라이브러리(olefile, zipfile, docx, pdfplumber, pptx)로 동작합니다.
+- 아래아한글(HWP, HWPX) 파싱: chrisryugj/kordoc 엔진을 메인 엔진으로 사용하여
+  표(Table), 셀 병합, 제목 위계, 목록을 100% 보존한 표준 마크다운을 추출합니다.
+- Fallback: python-hwpx, olefile, zipfile, docx, pdfplumber, pptx 등을 순차적 안전망으로 지원합니다.
 """
 
 import os
 import sys
 import zlib
 import zipfile
-import xml.etree.ElementTree as ET
+import shutil
+import subprocess
+import tempfile
+import uuid
 from pathlib import Path
+import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -39,8 +45,76 @@ except ImportError:
     Presentation = None
 
 
+def parse_with_kordoc(file_path: str) -> Optional[str]:
+    """
+    kordoc (Node.js 기반 메인 파서) 엔진을 호출하여 HWP/HWPX/PDF/DOCX 문서를
+    표와 서식 위계가 완벽히 보존된 고품질 마크다운으로 변환합니다.
+    """
+    src_path = Path(file_path).resolve()
+    if not src_path.exists():
+        return None
+
+    # 임시 출력 마크다운 파일 경로 설정
+    temp_dir = Path("temp").resolve()
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    out_file = temp_dir / f"kordoc_out_{uuid.uuid4().hex[:8]}.md"
+
+    # 실행 바이너리 결정: 전역 설치된 kordoc 우선, 없으면 npx 호출
+    kordoc_bin = "kordoc.cmd" if os.name == "nt" else "kordoc"
+    if shutil.which(kordoc_bin) or shutil.which("kordoc"):
+        cmd = [kordoc_bin, str(src_path), "-o", str(out_file)]
+    else:
+        npx_bin = "npx.cmd" if os.name == "nt" else "npx"
+        if shutil.which(npx_bin) is None and shutil.which("npx"):
+            npx_bin = "npx"
+        cmd = [npx_bin, "-y", "kordoc", str(src_path), "-o", str(out_file)]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False
+        )
+
+        if proc.returncode == 0 and out_file.exists():
+            content = out_file.read_text(encoding="utf-8").strip()
+            try:
+                out_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if content:
+                return content
+        else:
+            err = proc.stderr.strip() or proc.stdout.strip()
+            print(f"[doc_parser] kordoc 실행 경고: {err}", file=sys.stderr)
+    except Exception as e:
+        print(f"[doc_parser] kordoc 호출 예외: {e}", file=sys.stderr)
+    finally:
+        if out_file.exists():
+            try:
+                out_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return None
+
+
 def parse_hwp(file_path: str) -> str:
-    """바이너리 HWP 5.0 파일에서 본문 텍스트를 추출합니다."""
+    """
+    바이너리 HWP 5.0 파일에서 본문 마크다운 및 텍스트를 추출합니다.
+    1차로 kordoc 엔진을 사용하여 표/위계 보존 마크다운을 추출하며,
+    실패 시 olefile 기반 저수준 바이트 스트림 파서로 fallback합니다.
+    """
+    # 1. kordoc 최우선 시도
+    kordoc_md = parse_with_kordoc(file_path)
+    if kordoc_md and kordoc_md.strip():
+        return kordoc_md.strip()
+
+    print("[doc_parser] kordoc 파싱 실패 또는 결과 없음, olefile 바이너리 파서로 fallback합니다.", file=sys.stderr)
+
     if olefile is None:
         raise ImportError("olefile 패키지가 필요합니다: pip install olefile")
 
@@ -102,8 +176,14 @@ def parse_hwp(file_path: str) -> str:
 def parse_hwpx(file_path: str) -> str:
     """
     HWPX 파일에서 구조화된 본문(문단, 표, 제목 위계)을 Markdown으로 추출합니다.
-    python-hwpx 엔진을 우선 사용하며, 실패 시 기본 XML 파서로 fallback합니다.
+    1차 kordoc 엔진, 2차 python-hwpx 엔진, 3차 기본 XML 순회 파서로 fallback합니다.
     """
+    # 1. kordoc 최우선 시도
+    kordoc_md = parse_with_kordoc(file_path)
+    if kordoc_md and kordoc_md.strip():
+        return kordoc_md.strip()
+
+    # 2. python-hwpx 시도
     try:
         from hwpx.ingest import DocumentIngestor
         ingestor = DocumentIngestor.default()
@@ -113,6 +193,7 @@ def parse_hwpx(file_path: str) -> str:
     except Exception as e:
         print(f"[doc_parser] python-hwpx 파싱 주의: {e}, 기본 XML 파서로 대체합니다.", file=sys.stderr)
 
+    # 3. 기본 XML 파서 fallback
     with zipfile.ZipFile(file_path, "r") as z:
         section_names = [name for name in z.namelist() if name.startswith("Contents/section") and name.endswith(".xml")]
         section_names.sort()

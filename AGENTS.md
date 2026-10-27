@@ -54,7 +54,7 @@
 - `scripts/`: 파이프라인 자동화 브릿지 및 변환 도구
               → `notion_ppt_bridge.py`: 노션 ↔ 로컬 ↔ 구글드라이브 연동 핵심 브릿지
               → `convert-ratio.py`: 4:3 ➔ 16:9 와이드 비율 변환 스크립트
-              → `doc_parser.py`: HWP/HWPX/DOCX/PDF/PPTX 범용 텍스트 추출 모듈
+              → `doc_parser.py`: kordoc 메인 엔진 기반 HWP/HWPX/DOCX/PDF/PPTX 구조화 마크다운 추출 모듈
 - `temp/`   : AI 임시 작업용 폴더 (언제든 삭제 가능)
 
 ---
