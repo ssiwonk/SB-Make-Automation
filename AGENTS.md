@@ -9,7 +9,7 @@
 
 **중요 원칙: 본 프로젝트의 모든 PPTX 저작 및 변환 작업은 오직 노션(Notion) 파이프라인을 통해서만 수행됩니다. 로컬 파일 기반 직접 변환 워크플로우는 허용되지 않습니다.**
 
-노션에 작성된 원고와 재활용 가능한 개발 지침을 결합하여 고품질의 PPTX를 자동 생성하고, 구글 드라이브 동기화 및 노션 결과를 실시간 업데이트하는 단일 통합 파이프라인입니다.
+노션에 작성된 원고와 재활용 가능한 개발 지침을 결합하여 고품질의 PPTX를 자동 생성하고, 노션 결과물(Files & media) 속성에 빌드 산출물을 직접 실시간 누적(Append) 첨부하는 단일 통합 파이프라인입니다.
 
 ## 1. 노션 데이터베이스 아키텍처
 - **상위 대시보드 페이지**: `NOTION-PPT` (`3fa624a3-5444-80bc-98f0-e9ba0624d2e2`)
@@ -37,8 +37,7 @@
 
 ## 2. 배포 및 노션 직접 첨부 환경
 - **노션 결과물 직접 첨부 (메인)**: 빌드 완료된 최종 산출물(`.pptx`, `index.html`)은 노션 공식 File Uploads API를 통해 `PPT-Pipeline`의 **`결과물` (Files & media)** 속성에 직접 업로드되며, 이전 버전이 유실되지 않도록 **누적(Append)** 저장된다.
-- **구글 드라이브 로컬 동기화 마운트 (백업)**: `G:\내 드라이브\Works_attach\NOTION-PPT` (하위에 `<프로젝트명>/` 폴더로도 보조 복사)
-- **구글 드라이브 웹 URL**: `https://drive.google.com/open?id=1CH7TFrOZMDKQD3SsvFWQ2Sl1sZcbWMwG&usp=drive_fs`
+- **외부 저장소 분리 원칙**: 로컬/외부 클라우드 별도 동기화는 전면 배제하며, 모든 버전 관리는 오직 노션 `결과물` 속성의 파일 누적(Append)으로만 단일화한다.
 
 ## 3. 폴더 구조 규칙
 - `md/`     : 노션에서 가져온 원고/지침 마크다운 및 이미지 캐시 폴더
@@ -52,7 +51,7 @@
               → `spec/md-definition.md` : 원고 Markdown 정제 및 교정 규칙 정의서
               → `spec/pptx-definition.md` : Markdown → PPTX 디자인, 인포그래픽 및 SVG 제작 규칙 정의서
 - `scripts/`: 파이프라인 자동화 브릿지 및 변환 도구
-              → `notion_ppt_bridge.py`: 노션 ↔ 로컬 ↔ 구글드라이브 연동 핵심 브릿지
+              → `notion_ppt_bridge.py`: 노션 File Upload API 직접 연동 핵심 브릿지
               → `convert-ratio.py`: 4:3 ➔ 16:9 와이드 비율 변환 스크립트
               → `doc_parser.py`: kordoc 메인 엔진 기반 HWP/HWPX/DOCX/PDF/PPTX 구조화 마크다운 추출 모듈
 - `temp/`   : AI 임시 작업용 폴더 (언제든 삭제 가능)
@@ -83,7 +82,7 @@
   ```bash
   python scripts/notion_ppt_bridge.py deploy "<Page ID>" "<pptx파일경로1>" "<pptx파일경로2>" --status "ppt 생성 완료"
   ```
-  → 구글 드라이브 `<프로젝트명>/` 하위 폴더로 복사 및 `PPT결과` 속성에 `[일시] 파일명` 누적, `진행상태`를 `ppt 생성 완료`로 갱신
+  → 노션 `결과물` (Files & media) 속성에 파일 직접 첨부(누적 Append) 및 `진행상태`를 `개발 완료`로 갱신
 - **진행상태 수동 변경**:
   ```bash
   python scripts/notion_ppt_bridge.py update-status "<프로젝트명 또는 Page ID>" "<상태명>"
@@ -125,6 +124,21 @@ python ppt-master/skills/ppt-master/scripts/svg_quality_checker.py <project_dir>
   2. `spec_lock.md` 동기화: 사용된 폰트 크기(px 단위 없는 순수 숫자), 컬러 팔레트가 선언과 일치하는지 확인
   3. 명도 대비(Contrast Ratio): 배경 대비 텍스트 최소 4.5:1 이상 충족
   4. 텍스트 박스 오버플로우 방지 및 안전 여백 확보
+
+### 5.5 HTML 슬라이드 실화면 비전 검증 게이트 (`scripts/capture_slides.py`) 필수 검증
+개발유형이 `html`인 프로젝트는 배포(`deploy`) 전 반드시 헤드리스 브라우저(Playwright) 자동 캡처 및 제3자 시각 비전 검증을 통과해야 한다:
+```bash
+python scripts/capture_slides.py "project/<프로젝트폴더>/index.html"
+```
+- **검증 프로세스**:
+  1. 1920×1080 와이드 고정 뷰포트에서 Slide 1부터 마지막 슬라이드까지 실화면 스크린샷 캡처 (`temp/screenshots/slide_XX.png`)
+  2. AI가 직접 스크린샷 이미지를 시각적으로 열어보고 다음 3대 기준을 검증:
+     - **여백 점유율 (White Space Ratio)**: 카드/컨테이너 내부의 휑한 빈 공간이 30% 이하인가?
+     - **비주얼 스케일 (Visual Scale)**: 삽입된 비주얼/차트/데이터 블록이 카드 높이의 50% 이상을 차지하며 시각적 균형을 이루는가?
+     - **레이아웃 정합성**: 요소가 바닥이나 한쪽 구석으로 찌그러지지 않고 좌우 바닥선이 일치하는가?
+  3. 기준 미달 슬라이드가 존재할 경우 노션 배포를 금지하고 레이아웃 전면 개편 후 재캡처/재검증 진행.
+
+---
 
 ### 5.4 16:9 와이드 변환본 처리 규칙
 - `개발비율: 16:9` 프로젝트: 이미 16:9 네이티브로 직접 저작되므로 `convert-ratio.py`를 거치지 않고 완성본(`exports/<project_name>_<timestamp>.pptx`)을 그대로 배포한다.

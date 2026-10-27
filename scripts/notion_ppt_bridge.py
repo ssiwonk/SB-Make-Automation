@@ -4,7 +4,7 @@
 Notion-PPT Automation Bridge
 - Notion DB(PPT-Pipeline, PPT-Scripts, PPT-Guidelines)와 로컬 생성 엔진(ppt-master)을 연동
 - 노션 본문 내 마크다운 추출 및 이미지(S3) 로컬 자동 캐싱
-- 생성된 PPTX 파일 Google Drive 자동 동기화 (로컬 마운트 드라이브 복사)
+  - 노션 결과물(Files & media) 직접 누적 첨부 (Direct Append)
 - Notion PPT결과 속성 링크 Append 및 진행상태 업데이트
 """
 
@@ -14,6 +14,7 @@ import json
 import shutil
 import urllib.request
 import urllib.parse
+import requests
 from pathlib import Path
 from datetime import datetime
 
@@ -51,8 +52,7 @@ PIPELINE_DB_ID = "3fa624a3-5444-8064-aa7c-ed9c93dd8bdd"
 SCRIPTS_DB_ID = "3fa624a3-5444-803c-93ff-f437c0b9f9d8"
 GUIDELINES_DB_ID = "3fa624a3-5444-80c1-9c4e-c4ea770a8a92"
 
-GDRIVE_LOCAL_PATH = Path(r"G:\내 드라이브\Works_attach\NOTION-PPT")
-GDRIVE_WEB_URL = "https://drive.google.com/open?id=1CH7TFrOZMDKQD3SsvFWQ2Sl1sZcbWMwG&usp=drive_fs"
+# Google Drive removed: Notion Direct Append Standard
 
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
@@ -937,11 +937,11 @@ def upload_file_to_notion(file_path):
 
 def deploy_and_update_pipeline(project_id, files_to_deploy, new_status="개발 완료"):
     """
-    생성된 산출물(PPTX, HTML 등) 파일들을:
-    1. 구글 드라이브(로컬 마운트)의 <프로젝트명>/ 하위 폴더로 복사 (로컬 백업)
-    2. Notion PPT-Pipeline의 '결과물'(files 속성)에 직접 업로드하여 누적(Append)
-    3. Notion 'PPT결과' 텍스트 속성에 일시와 파일명 누적
-    4. 진행상태를 new_status(기본: '개발 완료')로 갱신
+    빌드 산출물(PPTX, HTML 등) 배포:
+    1. Notion PPT-Pipeline의 '결과물'(files 속성)에 파일 업로드하여 누적(Append)
+    2. Notion 'PPT결과' 텍스트 속성에도 일시와 파일명 기록 (호환성 유지)
+    3. 진행상태를 new_status(기본: '개발 완료')로 갱신
+    (노션 공식 File Upload API 누적 첨부 전용 파이프라인)
     """
     import re
     target_page = get_page(project_id)
@@ -950,26 +950,16 @@ def deploy_and_update_pipeline(project_id, files_to_deploy, new_status="개발 �
     # 프로젝트명 추출
     title_objs = props.get("프로젝트", {}).get("title", [])
     proj_name = title_objs[0]["plain_text"] if title_objs else "Untitled"
-    safe_proj_name = re.sub(r'[\\/*?:"<>|]', "_", proj_name).strip()
     
-    # 기존 PPT결과 텍스트 가져오기
+    # 기존 PPT결과 텍스트 읽기
     existing_rich_text = props.get("PPT결과", {}).get("rich_text", [])
     existing_text = "".join([t.get("plain_text", "") for t in existing_rich_text])
     
-    # 기존 '결과물' 파일 목록 가져오기 (누적 보존용)
+    # 기존 '결과물' 파일 목록 읽기 (누적 보존)
     existing_files = props.get("결과물", {}).get("files", [])
     
     copied_files_info = []
     new_notion_files = []
-    
-    # 구글 드라이브 마운트 확인 및 프로젝트 하위 폴더 생성 (백업용)
-    gdrive_active = GDRIVE_LOCAL_PATH.exists()
-    if gdrive_active:
-        proj_gdrive_dir = GDRIVE_LOCAL_PATH / safe_proj_name
-        proj_gdrive_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        proj_gdrive_dir = None
-        
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     for file_str in files_to_deploy:
@@ -979,23 +969,16 @@ def deploy_and_update_pipeline(project_id, files_to_deploy, new_status="개발 �
             continue
             
         file_name = src_path.name
-        
-        # 1. 로컬 구글 드라이브 백업 복사
-        if gdrive_active and proj_gdrive_dir:
-            dest_path = proj_gdrive_dir / file_name
-            shutil.copy2(src_path, dest_path)
-            print(f"  [Google Drive Sync] 동기화 완료: {dest_path}")
-            
         info_line = f"[{now_str}] {file_name}"
         copied_files_info.append(info_line)
         
-        # 2. 노션 File Upload API로 직접 업로드
+        # Notion 공식 File Upload API로 직접 업로드
         uploaded_obj = upload_file_to_notion(src_path)
         if uploaded_obj:
             new_notion_files.append(uploaded_obj)
         
     if not copied_files_info:
-        print("동기화할 유효한 산출물 파일이 없습니다.")
+        print("동기화할 유효한 결과물 파일이 없습니다.")
         return
         
     # 노션 속성 업데이트 준비
@@ -1005,7 +988,7 @@ def deploy_and_update_pipeline(project_id, files_to_deploy, new_status="개발 �
         }
     }
     
-    # PPT결과 텍스트 속성이 있으면 누적
+    # PPT결과 텍스트 속성 업데이트 (호환)
     if "PPT결과" in props:
         new_append_block = "\n".join(copied_files_info)
         updated_text = f"{existing_text}\n{new_append_block}".strip() if existing_text else new_append_block
@@ -1013,23 +996,31 @@ def deploy_and_update_pipeline(project_id, files_to_deploy, new_status="개발 �
             "rich_text": [
                 {
                     "type": "text",
-                    "text": {"content": updated_text}
+                    "text": {"content": updated_text[:2000]}
                 }
             ]
         }
         
-    # '결과물' 파일 및 미디어 속성에 누적(Append) 업데이트
+    # 결과물 (files) 속성에 누적(Append) 업데이트
     if "결과물" in props:
-        all_files = existing_files + new_notion_files
+        combined_files = list(existing_files) + new_notion_files
         update_props["결과물"] = {
-            "files": all_files
+            "files": combined_files
         }
+        
+    patch_url = f"{NOTION_API_BASE}/pages/{project_id}"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json"
+    }
     
-    update_page_properties(project_id, update_props)
-    print(f"\n[Notion Update] 프로젝트 ID({project_id}) '결과물' 속성에 파일 {len(new_notion_files)}개 직접 첨부 완료!")
-    print(f"  - 진행상태 갱신: [{new_status}]")
-    if "PPT결과" in update_props:
-        print(f"  - 텍스트 히스토리 기록 완료:\n{new_append_block}")
+    resp = requests.patch(patch_url, headers=headers, json={"properties": update_props})
+    if resp.status_code == 200:
+        print(f"\n[Notion Update] 프로젝트 ID({project_id}) '결과물' 속성에 파일 {len(new_notion_files)}개 직접 첨부 완료!")
+        print(f"  - 진행상태 갱신: [{new_status}]")
+    else:
+        print(f"\n[Notion Update Failed] 상태 업데이트 실패 ({resp.status_code}): {resp.text}", file=sys.stderr)
 
 # ==========================================
 # CLI Entrypoint
@@ -1048,7 +1039,7 @@ def main():
     fetch_parser.add_argument("--check-ready", action="store_true", help="'ppt 준비 완료' 상태인지 사전 검증")
     
     # 3. deploy
-    deploy_parser = subparsers.add_parser("deploy", help="생성된 산출물(PPTX, HTML 등) 파일을 구글 드라이브/노션으로 배포")
+    deploy_parser = subparsers.add_parser("deploy", help="완성 산출물(PPTX, HTML 등) 노션 결과물 속성에 직접 첨부(Append) 및 상태 갱신")
     deploy_parser.add_argument("project_id", help="Notion PPT-Pipeline Page ID")
     deploy_parser.add_argument("files", nargs="+", help="배포할 파일 경로 목록 (.pptx, index.html 등)")
     deploy_parser.add_argument("--status", default="개발 완료", help="변경할 진행상태 (기본: '개발 완료')")
