@@ -630,6 +630,21 @@ def fetch_project_data(project_identifier, check_ready=False):
     
     print(f"\n[Fetch] 프로젝트 '{proj_name}' 데이터 수집 시작...")
     
+    # 1. 프로젝트 자체 메모 및 본문 피드백 추출 (수정 요청 사항 반영)
+    feedback_parts = []
+    memo_objs = props.get("메모", {}).get("rich_text", [])
+    if memo_objs:
+        memo_text = "".join([t.get("plain_text", "") for t in memo_objs]).strip()
+        if memo_text:
+            print(f"  - 프로젝트 '메모' 피드백 로드: {memo_text[:40]}...")
+            feedback_parts.append(f"### [프로젝트 메모/수정요청]\n{memo_text}")
+
+    proj_blocks = get_block_children(target_page["id"])
+    proj_body_md = blocks_to_markdown(proj_blocks).strip()
+    if proj_body_md:
+        print(f"  - 프로젝트 본문(Body) 피드백 로드 ({len(proj_body_md)}자)")
+        feedback_parts.append(f"### [프로젝트 본문 수정요청 및 추가지침]\n{proj_body_md}")
+
     # 2. 원고 마크다운 추출
     script_md_parts = []
     if not script_relations:
@@ -662,6 +677,8 @@ def fetch_project_data(project_identifier, check_ready=False):
         guideline_parts.append(f"### [지침: {g_title_str}]\n{g_md}")
         
     full_guideline_md = "\n\n".join(guideline_parts)
+    if feedback_parts:
+        full_guideline_md = "\n\n".join(feedback_parts) + ("\n\n" + full_guideline_md if full_guideline_md else "")
     
     # 4. 이미지 다운로드 및 로컬 캐싱
     md_root = Path("md")
