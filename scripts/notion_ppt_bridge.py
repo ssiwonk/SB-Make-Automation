@@ -630,7 +630,7 @@ def fetch_project_data(project_identifier, check_ready=False):
     
     print(f"\n[Fetch] 프로젝트 '{proj_name}' 데이터 수집 시작...")
     
-    # 1. 프로젝트 자체 메모 및 본문 피드백 추출 (수정 요청 사항 반영)
+    # 1. 프로젝트 자체 메모 및 버전별 본문 피드백 추출 (## <파일명> 기반)
     feedback_parts = []
     memo_objs = props.get("메모", {}).get("rich_text", [])
     if memo_objs:
@@ -639,11 +639,38 @@ def fetch_project_data(project_identifier, check_ready=False):
             print(f"  - 프로젝트 '메모' 피드백 로드: {memo_text[:40]}...")
             feedback_parts.append(f"### [프로젝트 메모/수정요청]\n{memo_text}")
 
+    existing_files = props.get("결과물", {}).get("files", [])
+    latest_file_name = existing_files[-1].get("name") if existing_files else None
+
     proj_blocks = get_block_children(target_page["id"])
     proj_body_md = blocks_to_markdown(proj_blocks).strip()
     if proj_body_md:
-        print(f"  - 프로젝트 본문(Body) 피드백 로드 ({len(proj_body_md)}자)")
-        feedback_parts.append(f"### [프로젝트 본문 수정요청 및 추가지침]\n{proj_body_md}")
+        import re
+        # ## <파일명> 섹션 분할 파싱
+        sections = re.split(r'(?m)^##\s+', proj_body_md)
+        if len(sections) > 1:
+            active_feedback = []
+            archived_feedback = []
+            for sec in sections:
+                sec = sec.strip()
+                if not sec:
+                    continue
+                first_line = sec.splitlines()[0].strip()
+                content = "\n".join(sec.splitlines()[1:]).strip()
+                # 최신 파일명과 일치하는지 판별 (공백, 대소문자 허용)
+                if latest_file_name and (first_line.lower() in latest_file_name.lower() or latest_file_name.lower() in first_line.lower()):
+                    active_feedback.append(f"### [★ 현재 활성 수정요청 (대상: {first_line})]\n{content}")
+                    print(f"  - 최신 결과물('{latest_file_name}') 매칭 수정요청 섹션 발견!")
+                else:
+                    archived_feedback.append(f"### [과거 이력 ({first_line})]\n{content}")
+
+            if active_feedback:
+                feedback_parts.extend(active_feedback)
+            if archived_feedback:
+                feedback_parts.extend(archived_feedback)
+        else:
+            print(f"  - 프로젝트 본문(Body) 피드백 로드 ({len(proj_body_md)}자)")
+            feedback_parts.append(f"### [프로젝트 본문 수정요청 및 추가지침]\n{proj_body_md}")
 
     # 2. 원고 마크다운 추출
     script_md_parts = []
@@ -684,8 +711,11 @@ def fetch_project_data(project_identifier, check_ready=False):
     md_root = Path("md")
     md_root.mkdir(parents=True, exist_ok=True)
     
-    print("  [Image Caching] 본문 내 이미지 다운로드 및 상대 경로 치환 중...")
+    print("  [Image Caching] 본문 및 지침/피드백 내 이미지 다운로드 및 상대 경로 치환 중...")
     clean_md, downloaded_count = cache_images_and_fix_links(full_script_md, safe_name, md_root)
+    if full_guideline_md and "amazonaws.com" in full_guideline_md:
+        full_guideline_md, g_img_count = cache_images_and_fix_links(full_guideline_md, safe_name, md_root)
+        downloaded_count += g_img_count
     print(f"  [Image Caching] 총 {downloaded_count}개 이미지 로컬 저장 완료.")
     
     # 5. 로컬 파일 저장
