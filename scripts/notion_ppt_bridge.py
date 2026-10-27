@@ -496,7 +496,7 @@ def process_pipeline_script(project_identifier):
 def check_pipeline_for_ppt(project_identifier):
     """
     [2단계 진입 전 상태 검증]
-    - 상태가 'ppt 준비 완료'인지 엄격히 검증
+    - 상태가 '개발 준비 완료' (또는 'ppt 준비 완료')인지 엄격히 검증
     """
     page = find_pipeline_project(project_identifier)
     if not page:
@@ -510,9 +510,9 @@ def check_pipeline_for_ppt(project_identifier):
     status_obj = props.get("진행상태", {}).get("select")
     status = status_obj["name"] if status_obj else "미지정"
     
-    if status not in ["ppt 준비 완료", "PPT 준비 완료", "준비 완료"]:
+    if status not in ["개발 준비 완료", "ppt 준비 완료", "PPT 준비 완료", "준비 완료"]:
         print(f"\n[안내] 프로젝트 '{proj_name}'은(는) 아직 준비가 안된 것 같습니다.")
-        print(f"  - 현재 진행상태: [{status}] (필요 상태: 'ppt 준비 완료')")
+        print(f"  - 현재 진행상태: [{status}] (필요 상태: '개발 준비 완료')")
         return None
         
     return page
@@ -522,10 +522,13 @@ def list_pipeline_projects():
     data = query_database(PIPELINE_DB_ID)
     projects = []
     status_counts = {
+        "Task 준비 중": 0,
         "준비 중": 0,
         "원고 준비 완료": 0,
         "원고 완료": 0,
+        "개발 준비 완료": 0,
         "ppt 준비 완료": 0,
+        "개발 완료": 0,
         "ppt 생성 완료": 0,
         "기타": 0
     }
@@ -550,23 +553,30 @@ def list_pipeline_projects():
         elif status == "준비 완료":
             status_counts["원고 준비 완료"] += 1
         elif status in ["PPT 생성완료", "PPT생성완료"]:
-            status_counts["ppt 생성 완료"] += 1
+            status_counts["개발 완료"] += 1
         else:
             status_counts["기타"] += 1
         
+        dev_type_obj = props.get("개발유형", {}).get("select")
+        dev_type = dev_type_obj["name"] if dev_type_obj else "powerpoint"
+
         ratio_obj = props.get("개발비율", {}).get("select") or props.get("비율", {}).get("select")
         ratio = ratio_obj["name"] if ratio_obj else "4:3 (기본)"
         
         scripts = props.get("원고", {}).get("relation", []) or props.get("원고(마크다운)", {}).get("relation", [])
-        guidelines = props.get("PPT개발지침", {}).get("relation", []) or props.get("개발지침", {}).get("relation", [])
+        guidelines = props.get("개발지침", {}).get("relation", []) or props.get("PPT개발지침", {}).get("relation", [])
+        
+        files_list = props.get("결과물", {}).get("files", [])
+        files_str = f"첨부파일 {len(files_list)}개" if files_list else "없음"
         
         results_objs = props.get("PPT결과", {}).get("rich_text", [])
-        results_preview = results_objs[0]["plain_text"][:30] + "..." if results_objs else "없음"
+        results_preview = results_objs[0]["plain_text"][:30] + "..." if results_objs else files_str
         
         projects.append({
             "id": p_id,
             "title": title,
             "status": status,
+            "dev_type": dev_type,
             "ratio": ratio,
             "has_script": len(scripts) > 0,
             "has_guidelines": len(guidelines) > 0,
@@ -574,12 +584,14 @@ def list_pipeline_projects():
         })
         
         print(f"* 프로젝트: {title} (ID: {p_id})")
-        print(f"  - 상태: [{status}] | 비율: [{ratio}]")
+        print(f"  - 상태: [{status}] | 개발유형: [{dev_type}] | 비율: [{ratio}]")
         print(f"  - 원고 연결: {'O (' + str(len(scripts)) + '개)' if scripts else 'X'} | 지침 연결: {'O (' + str(len(guidelines)) + '개)' if guidelines else 'X'}")
         print(f"  - 결과물: {results_preview}")
         print("-" * 70)
         
-    print(f"[상태별 집계] 준비 중: {status_counts['준비 중']}개 | 원고 준비 완료(1단계 대기): {status_counts['원고 준비 완료']}개 | 원고 완료(검토 대기): {status_counts['원고 완료']}개 | ppt 준비 완료(2단계 대기): {status_counts['ppt 준비 완료']}개 | ppt 생성 완료: {status_counts['ppt 생성 완료']}개")
+    ready_count = status_counts['개발 준비 완료'] + status_counts['ppt 준비 완료']
+    done_count = status_counts['개발 완료'] + status_counts['ppt 생성 완료']
+    print(f"[상태별 집계] 준비 중: {status_counts['준비 중'] + status_counts['Task 준비 중']}개 | 원고 준비 완료: {status_counts['원고 준비 완료']}개 | 원고 완료: {status_counts['원고 완료']}개 | 개발 준비 완료(2단계 대기): {ready_count}개 | 개발 완료: {done_count}개")
     print("=" * 70)
     return projects
 
@@ -598,9 +610,10 @@ def fetch_project_data(project_identifier, check_ready=False):
     if check_ready:
         status_obj = props.get("진행상태", {}).get("select")
         status = status_obj["name"] if status_obj else "미지정"
-        if status not in ["ppt 준비 완료", "PPT 준비 완료", "준비 완료"]:
+        if status not in ["개발 준비 완료", "ppt 준비 완료", "PPT 준비 완료", "준비 완료"]:
             print(f"\n[안내] 프로젝트 '{proj_name}'은(는) 아직 준비가 안된 것 같습니다.")
-            print(f"  - 현재 진행상태: [{status}] (필요 상태: 'ppt 준비 완료')")
+            print(f"  - 현재 진행상태: [{status}] (필요 상태: '개발 준비 완료')")
+            return None
             return None
         
     props = target_page["properties"]
@@ -805,10 +818,83 @@ def convert_script_from_file(script_identifier):
     print(f"  - 버전 갱신: {curr_v} ➔ [{next_v}]")
     print(f"  - 노션 본문 하단에 [{next_v}] 마크다운이 성공적으로 누적되었습니다.")
 
-def deploy_and_update_pipeline(project_id, pptx_files, new_status="ppt 생성 완료"):
+def upload_file_to_notion(file_path):
     """
-    생성된 PPTX 파일들을 구글 드라이브(로컬 마운트)의 <프로젝트명>/ 하위 폴더로 복사하고,
-    Notion PPT-Pipeline의 PPT결과 속성에 파일명과 일시를 누적(Append)하여 업데이트
+    Notion v1/file_uploads API를 사용하여 로컬 파일을 노션 스토리지에 직접 업로드하고
+    files 속성에 첨부할 수 있는 file_upload 객체를 반환합니다.
+    """
+    import requests
+    src_path = Path(file_path).resolve()
+    if not src_path.exists():
+        print(f"[Warning] 업로드할 파일을 찾을 수 없습니다: {src_path}", file=sys.stderr)
+        return None
+
+    ext = src_path.suffix.lower()
+    content_type_map = {
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".html": "text/html",
+        ".htm": "text/html",
+        ".pdf": "application/pdf",
+        ".zip": "application/zip",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".svg": "image/svg+xml"
+    }
+    content_type = content_type_map.get(ext, "application/octet-stream")
+    
+    # 1. file_upload 객체 생성
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json"
+    }
+    init_res = requests.post(
+        f"{NOTION_API_BASE}/file_uploads",
+        headers=headers,
+        json={"filename": src_path.name, "content_type": content_type}
+    )
+    if init_res.status_code not in (200, 201):
+        print(f"[Notion Upload Error] init 실패: {init_res.status_code} {init_res.text}", file=sys.stderr)
+        return None
+        
+    init_data = init_res.json()
+    upload_url = init_data["upload_url"]
+    upload_id = init_data["id"]
+    
+    # 2. 파일 바이너리 전송 (multipart/form-data)
+    send_headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": NOTION_VERSION
+    }
+    with open(src_path, "rb") as f:
+        send_res = requests.post(
+            upload_url,
+            headers=send_headers,
+            files={"file": (src_path.name, f, content_type)}
+        )
+        
+    if send_res.status_code not in (200, 201):
+        print(f"[Notion Upload Error] 파일 전송 실패: {send_res.status_code} {send_res.text}", file=sys.stderr)
+        return None
+        
+    print(f"  [Notion File Upload] 업로드 성공: '{src_path.name}' (ID: {upload_id})")
+    return {
+        "name": src_path.name,
+        "type": "file_upload",
+        "file_upload": {
+            "id": upload_id
+        }
+    }
+
+def deploy_and_update_pipeline(project_id, files_to_deploy, new_status="개발 완료"):
+    """
+    생성된 산출물(PPTX, HTML 등) 파일들을:
+    1. 구글 드라이브(로컬 마운트)의 <프로젝트명>/ 하위 폴더로 복사 (로컬 백업)
+    2. Notion PPT-Pipeline의 '결과물'(files 속성)에 직접 업로드하여 누적(Append)
+    3. Notion 'PPT결과' 텍스트 속성에 일시와 파일명 누적
+    4. 진행상태를 new_status(기본: '개발 완료')로 갱신
     """
     import re
     target_page = get_page(project_id)
@@ -823,61 +909,80 @@ def deploy_and_update_pipeline(project_id, pptx_files, new_status="ppt 생성 �
     existing_rich_text = props.get("PPT결과", {}).get("rich_text", [])
     existing_text = "".join([t.get("plain_text", "") for t in existing_rich_text])
     
-    copied_files_info = []
+    # 기존 '결과물' 파일 목록 가져오기 (누적 보존용)
+    existing_files = props.get("결과물", {}).get("files", [])
     
-    # 구글 드라이브 마운트 확인 및 프로젝트 하위 폴더 생성
+    copied_files_info = []
+    new_notion_files = []
+    
+    # 구글 드라이브 마운트 확인 및 프로젝트 하위 폴더 생성 (백업용)
     gdrive_active = GDRIVE_LOCAL_PATH.exists()
     if gdrive_active:
         proj_gdrive_dir = GDRIVE_LOCAL_PATH / safe_proj_name
         proj_gdrive_dir.mkdir(parents=True, exist_ok=True)
     else:
-        print(f"[Warning] 구글 드라이브 로컬 경로({GDRIVE_LOCAL_PATH})에 접근할 수 없습니다.", file=sys.stderr)
+        proj_gdrive_dir = None
         
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    for file_str in pptx_files:
+    for file_str in files_to_deploy:
         src_path = Path(file_str).resolve()
         if not src_path.exists():
             print(f"  [Warning] 파일을 찾을 수 없어 건너뜁니다: {src_path}", file=sys.stderr)
             continue
             
         file_name = src_path.name
-        if gdrive_active:
+        
+        # 1. 로컬 구글 드라이브 백업 복사
+        if gdrive_active and proj_gdrive_dir:
             dest_path = proj_gdrive_dir / file_name
             shutil.copy2(src_path, dest_path)
             print(f"  [Google Drive Sync] 동기화 완료: {dest_path}")
-            info_line = f"[{now_str}] {file_name}"
-        else:
-            info_line = f"[{now_str}] {file_name}"
             
+        info_line = f"[{now_str}] {file_name}"
         copied_files_info.append(info_line)
         
+        # 2. 노션 File Upload API로 직접 업로드
+        uploaded_obj = upload_file_to_notion(src_path)
+        if uploaded_obj:
+            new_notion_files.append(uploaded_obj)
+        
     if not copied_files_info:
-        print("동기화할 유효한 PPTX 파일이 없습니다.")
+        print("동기화할 유효한 산출물 파일이 없습니다.")
         return
         
-    # 노션 PPT결과 Append 구성
-    new_append_block = "\n".join(copied_files_info)
-    updated_text = f"{existing_text}\n{new_append_block}".strip() if existing_text else new_append_block
-    
-    # 노션 업데이트 요청
+    # 노션 속성 업데이트 준비
     update_props = {
-        "PPT결과": {
+        "진행상태": {
+            "select": {"name": new_status}
+        }
+    }
+    
+    # PPT결과 텍스트 속성이 있으면 누적
+    if "PPT결과" in props:
+        new_append_block = "\n".join(copied_files_info)
+        updated_text = f"{existing_text}\n{new_append_block}".strip() if existing_text else new_append_block
+        update_props["PPT결과"] = {
             "rich_text": [
                 {
                     "type": "text",
                     "text": {"content": updated_text}
                 }
             ]
-        },
-        "진행상태": {
-            "select": {"name": new_status}
         }
-    }
+        
+    # '결과물' 파일 및 미디어 속성에 누적(Append) 업데이트
+    if "결과물" in props:
+        all_files = existing_files + new_notion_files
+        update_props["결과물"] = {
+            "files": all_files
+        }
     
     update_page_properties(project_id, update_props)
-    print(f"\n[Notion Update] 프로젝트 ID({project_id})의 'PPT결과' 및 진행상태([{new_status}]) 업데이트 완료!")
-    print(f"  추가된 내용:\n{new_append_block}")
+    print(f"\n[Notion Update] 프로젝트 ID({project_id}) '결과물' 속성에 파일 {len(new_notion_files)}개 직접 첨부 완료!")
+    print(f"  - 진행상태 갱신: [{new_status}]")
+    if "PPT결과" in update_props:
+        print(f"  - 텍스트 히스토리 기록 완료:\n{new_append_block}")
 
 # ==========================================
 # CLI Entrypoint
@@ -896,10 +1001,10 @@ def main():
     fetch_parser.add_argument("--check-ready", action="store_true", help="'ppt 준비 완료' 상태인지 사전 검증")
     
     # 3. deploy
-    deploy_parser = subparsers.add_parser("deploy", help="생성된 PPTX 파일을 구글 드라이브로 배포하고 노션 업데이트")
+    deploy_parser = subparsers.add_parser("deploy", help="생성된 산출물(PPTX, HTML 등) 파일을 구글 드라이브/노션으로 배포")
     deploy_parser.add_argument("project_id", help="Notion PPT-Pipeline Page ID")
-    deploy_parser.add_argument("files", nargs="+", help="배포할 .pptx 파일 경로 목록")
-    deploy_parser.add_argument("--status", default="ppt 생성 완료", help="변경할 진행상태 (기본: 'ppt 생성 완료')")
+    deploy_parser.add_argument("files", nargs="+", help="배포할 파일 경로 목록 (.pptx, index.html 등)")
+    deploy_parser.add_argument("--status", default="개발 완료", help="변경할 진행상태 (기본: '개발 완료')")
 
     # 4. convert-script (원고 DB 단독 변환)
     conv_parser = subparsers.add_parser("convert-script", help="PPT-Scripts에 첨부된 원본파일을 마크다운으로 변환하여 본문 누적 및 버전 증가")
